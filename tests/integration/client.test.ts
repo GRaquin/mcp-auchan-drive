@@ -10,18 +10,20 @@ import cartRemoveFixture from '../fixtures/cart-remove-response.json' assert { t
 // HTML minimal simulant une page de résultats de recherche Auchan Drive
 const SEARCH_HTML = `
 <html><body>
+<article>
+<strong>ELLE &amp; VIRE</strong>
+<p class="product-thumbnail__description">Beurre tendre doux 82%MG</p>
+<div class="product-price">2,98 €</div>
+<span>11,92 € / kg</span>
+<span class="product-attribute">250g</span>
+<a href="/produit/pr-C1264653">voir</a>
 <div class="quantity-selector"
   data-product-id="acfdc139-5da2-4e2c-b652-5687fa2932b1"
   data-offer-id="19f46dfd-f09f-5533-9958-a71f53c6adbb"
   data-seller-id="b42fbf5b-51d4-42d0-bad8-abe4e6963846"
   data-seller-type="GROCERY">
 </div>
-<p class="product-thumbnail__description">Beurre tendre doux 82%MG</p>
-<article><strong>ELLE &amp; VIRE</strong></article>
-<div class="product-price">2,98 €</div>
-<span>11,92 € / kg</span>
-<span class="product-attribute">250g</span>
-<a href="/produit/pr-C1264653">voir</a>
+</article>
 </body></html>
 `;
 

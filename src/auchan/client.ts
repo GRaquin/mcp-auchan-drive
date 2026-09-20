@@ -108,10 +108,21 @@ export class AuchanClient {
   // ── API publique ────────────────────────────────────────────────────────────
 
   /** Recherche de produits dans le catalogue Drive. */
+  /**
+   * Recherche de produits dans le catalogue Drive.
+   *
+   * Lorsque la requête correspond exactement à un nom de rayon (ex. "riz", "eau",
+   * "sucre"), le site répond par une redirection 301 vers la page catégorie
+   * correspondante au lieu d'une page de résultats. Avec l'en-tête
+   * "X-Requested-With: XMLHttpRequest", cette redirection casse silencieusement
+   * (corps vide) ; sans lui, fetch la suit normalement et la page catégorie
+   * contient les mêmes cartes produit qu'une page de résultats — d'où xhr=false ici.
+   */
   async search(query: string): Promise<SearchProduct[]> {
     const response = await this.request(
       `${this.baseUrl}/recherche?text=${encodeURIComponent(query)}`,
       { headers: { Accept: 'text/html' } },
+      false,
     );
     return parseSearchResults(await response.text());
   }

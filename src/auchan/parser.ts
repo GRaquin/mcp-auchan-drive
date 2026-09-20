@@ -35,6 +35,15 @@ function attr(tag: string, name: string): string | undefined {
 export function parseSearchResults(html: string): SearchProduct[] {
   const products: SearchProduct[] = [];
 
+  // Borne le contexte de chaque produit par les balises <article> (une carte produit
+  // par <article>) plutôt qu'une fenêtre fixe : les cartes volumineuses (images en
+  // plusieurs résolutions, widget d'avis, métadonnées JS...) dépassent facilement
+  // quelques ko, ce qui faisait parfois déborder sur la carte précédente ou suivante.
+  const articleStarts: number[] = [];
+  const artRe = /<article/g;
+  let artM: RegExpExecArray | null;
+  while ((artM = artRe.exec(html)) !== null) articleStarts.push(artM.index);
+
   // Balise ouvrante du quantity-selector (chaque produit en a une)
   const tagRe = /<div[^>]+data-product-id="[^"]+"[^>]*>/g;
   let tagMatch: RegExpExecArray | null;
@@ -52,10 +61,16 @@ export function parseSearchResults(html: string): SearchProduct[] {
 
     if (!productId || !offerId || !sellerId || !sellerType) continue;
 
-    // Contexte HTML autour du sélecteur (~4 ko avant, 500 après)
-    // La description produit peut être à 3000+ chars avant le quantity-selector
-    const start = Math.max(0, tagMatch.index - 4000);
-    const end = Math.min(html.length, tagMatch.index + 500);
+    let start = 0;
+    let end = html.length;
+    if (articleStarts.length > 0) {
+      for (const pos of articleStarts) {
+        if (pos <= tagMatch.index) start = pos;
+      }
+      for (const pos of articleStarts) {
+        if (pos > tagMatch.index) { end = pos; break; }
+      }
+    }
     const ctx = html.slice(start, end);
 
     // Nom du produit — extrait le contenu texte complet du paragraphe (strip balises enfants)
