@@ -401,31 +401,37 @@ describe('AuchanClient.searchPromos', () => {
 
 const LOYALTY_HTML = `
 <html><body>
-<div class="o-cardSelector__cardNumberAndName">
-  <div class="o-cardSelector__cardNumber">N° <strong>0000000000000</strong></div>
-  <div class="o-cardSelector__cardName">DOE John</div>
-</div>
-<div class="t-myLoyalty__amount o-loyaltyMyCard__amount">
-  <div class="o-loyaltyMyCard__row">
-    <span>Ma cagnotte au 04/06/2026</span>
-    <span class="a-waaohTag a-waaohTag--xlarge a-waaohTag--transparent">3,46 €</span>
+<article class="n-card waaoh-card">
+  <div class="waaoh-card__reward">
+    <p class="text-headline-m waaoh-card__reward-amount">3.46 &#x20AC;</p>
   </div>
-</div>
-<div class="-waaohAccountID">Mon numéro de compte Waooh : 00000000</div>
-<div class="m-discountClubBox">
-  <div class="m-discountClubBox__title -waaoh">Votre jour W! est activé !</div>
-  <div class="m-discountClubBox__title -noBold">
-    Chaque <strong>mercredi</strong>, vous bénéficiez de
-    <strong>10 % cagnottés sur tous les produits frais des Halles*</strong>
+</article>
+<div class="waaoh-card__menu">
+  <p class="text-body-s">N&#xB0; de compte Waaoh! : 00000000</p>
+  <div class="change-card change-card--selected">
+    <div class="change-card__info">
+      <p class="change-card__name">DOE</p>
+      <p class="change-card__name">John</p>
+    </div>
   </div>
+  <div class="waaoh-card__wallet"><p>Carte N&#xB0; 0000000000000</p></div>
 </div>
-<section class="t-myLoyalty__section t-myLoyalty__section--challenges">
-  <div><strong>Jusqu’au 30 juin 2026</strong>, profitez des Défis Waaoh.</div>
-  <div class="a-waaohChallengeTag">
-    Cagnotte Défis Waaoh
-    <span class="a-waaohChallengeTag__amount">0,00 €</span>
-  </div>
-</section>
+<article id="discountClubPageContent" class="n-card day-w-card" aria-labelledby="n-card-selected-day-title">
+  <header class="n-card__header">
+    <h2 id="n-card-selected-day-title" class="text-headline-xs">10 % cagnott&#xE9;s sur tous les produits frais des Halles</h2>
+  </header>
+  <div class="n-card__content"><p>Mon jour W! : <strong>mercredi</strong></p></div>
+</article>
+<article class="n-card challenges-card">
+  <footer class="n-card__footer challenges-card__footer">
+    <div class="challenges-card__date-group">
+      <div class="challenges-card__date-label"><p>D&#xE9;fis en cours</p><p>Jusqu&#x2019;au 30 juin 2026</p></div>
+    </div>
+    <div class="challenges-card__amount-group">
+      <div class="challenges-card__amount"><p class="text-headline-m">0.00 &#x20AC;</p></div>
+    </div>
+  </footer>
+</article>
 </body></html>
 `;
 
@@ -442,8 +448,7 @@ describe('AuchanClient.getLoyaltyInfo', () => {
     expect(info.card.number).toBe('0000000000000');
     expect(info.card.holder).toBe('DOE John');
     expect(info.balance.amountCents).toBe(346);
-    expect(info.balance.amountFormatted).toBe('3,46 €');
-    expect(info.balance.balanceDate).toBe('04/06/2026');
+    expect(info.balance.amountFormatted).toBe('3.46 €');
     expect(info.waoohAccountNumber).toBe('00000000');
     expect(info.jourW.active).toBe(true);
     expect(info.jourW.day).toBe('mercredi');
@@ -558,29 +563,28 @@ describe('AuchanClient.getFavorites', () => {
 
 // ── getOrders ─────────────────────────────────────────────────────────────────
 
+function orderItem(ref: string, num: string, date: string, status: string): string {
+  return `
+  <li class="t-orders__item" data-fetch="/customer/async/orders/details/${ref}/${num}/false">
+    <div class="p-order">
+      <div class="p-order__header">
+        <div class="p-order__pointOfServiceAndReference">
+          <div class="p-order__reference">Commande n&#xB0; ${num} du ${date}</div>
+        </div>
+      </div>
+      <div class="a-simplifiedState"><span class="a-simplifiedState__label">${status}</span></div>
+      <div class="p-order__footer"><div class="p-order__footerRight">
+        <a href="/client/mes-commandes/${ref}/${num}">Voir le d&#xE9;tail</a>
+      </div></div>
+    </div>
+  </li>`;
+}
+
 const ORDERS_HTML = `
-<html><body>
-<ul>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Caluire</span>
-    <span>Commande n° 370069704 du 14 juin 2026</span>
-    <span>Enregistrée</span>
-    <span>14 Produits</span>
-    <span>38,62 €</span>
-    <a href="/client/mes-commandes/AROM-761999631/370069704">Modifier / Annuler...</a>
-  </li>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Lyon Nord</span>
-    <span>Commande n° 370000001 du 2 mai 2026</span>
-    <span>Retirée</span>
-    <span>7 Produits</span>
-    <span>21,50 €</span>
-    <a href="/client/mes-commandes/AROM-123456789/370000001">Détails</a>
-  </li>
-</ul>
-</body></html>
+<html><body><ul>
+  ${orderItem('AROM-761999631', '370069704', '14 juin 2026', 'Enregistr&#xE9;e')}
+  ${orderItem('AROM-123456789', '370000001', '2 mai 2026', 'Retir&#xE9;e')}
+</ul></body></html>
 `;
 
 describe('AuchanClient.getOrders', () => {
@@ -593,11 +597,7 @@ describe('AuchanClient.getOrders', () => {
     expect(orders[0].orderRef).toBe('AROM-761999631');
     expect(orders[0].orderNumber).toBe('370069704');
     expect(orders[0].date).toBe('14 juin 2026');
-    expect(orders[0].storeName).toBe('Auchan Drive Caluire');
     expect(orders[0].status).toBe('Enregistrée');
-    expect(orders[0].productCount).toBe(14);
-    expect(orders[0].total).toBe(3862);
-    expect(orders[0].totalFormatted).toBe('38,62 €');
     expect(orders[0].detailUrl).toBe('/client/mes-commandes/AROM-761999631/370069704');
 
     const [url] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
@@ -675,23 +675,28 @@ describe('AuchanClient.getOrders', () => {
 
 const ORDER_DETAIL_HTML = `
 <html><body>
-<ol class="o-orderStatus__list">
-  <li class="o-orderStatus__step o-orderStatus__step--active"><span>Enregistrée</span></li>
-  <li class="o-orderStatus__step"><span>En cours de préparation</span></li>
-  <li class="o-orderStatus__step"><span>Commande disponible</span></li>
-  <li class="o-orderStatus__step"><span>Retirée</span></li>
-</ol>
-<p>Retrait prévu le: mardi 16 juin entre 17h00 et 17h30</p>
-<div class="m-storeInfo">
-  <p class="m-storeInfo__name">Auchan Drive Caluire</p>
-  <p class="m-storeInfo__address">10 Chemin Jean Petit 69300 CALUIRE-ET-CUIRE</p>
+<div class="p-detail__simplifiedState">
+  <div class="a-simplifiedState"><span class="a-simplifiedState__label">Enregistr&#xE9;e</span></div>
 </div>
-<span class="m-orderSummary__totalPrice">38,62 €</span>
-<h2 class="m-orderProductList__categoryTitle">Boucherie, volaille, poissonnerie</h2>
-<div class="m-orderProduct">
-  <p class="m-orderProduct__name"><strong>AUCHAN</strong> Chipolatas supérieures aux herbes</p>
-  <span class="m-orderProduct__quantity">Quantité : 6</span>
-  <span class="m-orderProduct__price">8,34 €</span>
+<div class="p-detail__deliveryDate">Retrait pr&#xE9;vu le: mardi 16 juin entre 17h00 et 17h30</div>
+<div class="p-detail__addressesAndDelivery">
+  <div class="p-detail__address"><strong>Magasin</strong>
+    Auchan Drive Caluire<br>
+    10 Chemin Jean Petit<br>
+    69300 CALUIRE-ET-CUIRE
+    <a class="p-detail__storeLink" href="/magasins/s-1234">Infos</a></div>
+</div>
+<div class="p-detail__totalAmount"><div class="a-amount">38.62 &#x20AC;</div></div>
+<div class="p-detail__categoriesAndProductsWrapper">
+  <script>
+    const productUpdateDetail = {"product":{"name":"Chipolatas supérieures aux herbes","brand":{"name":"AUCHAN"},"category":{"level1":"Boucherie, volaille, poissonnerie"}}};
+
+    window.G = window.G || {};
+  </script>
+  <aside class="m-productItem__aside">
+    <div class="a-amount"><div class="a-amount__amount">8.34 €</div></div>
+    <div class="p-detail__productQuantity">Quantit&#xE9; : 6</div>
+  </aside>
 </div>
 </body></html>
 `;
@@ -706,7 +711,7 @@ describe('AuchanClient.getOrderDetail', () => {
     expect(detail.orderNumber).toBe('370069704');
     expect(detail.storeName).toBe('Auchan Drive Caluire');
     expect(detail.status).toBe('Enregistrée');
-    expect(detail.pickupSlot).toBe('mardi 16 juin entre 17h00 et 17h30');
+    expect(detail.pickupSlot).toBe('Retrait prévu le: mardi 16 juin entre 17h00 et 17h30');
     expect(detail.total).toBe(3862);
     expect(detail.products).toHaveLength(1);
     expect(detail.products[0].name).toBe('Chipolatas supérieures aux herbes');

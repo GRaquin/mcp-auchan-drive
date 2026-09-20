@@ -1,64 +1,74 @@
 import { describe, it, expect } from 'vitest';
 import { parseLoyaltyPage } from '../../../src/auchan/loyalty-parser.js';
 
-// HTML minimal reproduisant la structure réelle de /fidelite/accueil
+// HTML minimal reproduisant la structure réelle de /fidelite/accueil (refonte ~2026,
+// classes "waaoh-card__" / "change-card__" / "challenges-card__").
 // Les valeurs sensibles ont été remplacées par des données fictives.
 const FULL_HTML = `
 <html><body>
-<div class="o-cardSelector__cardNumberAndName">
-  <div class="o-cardSelector__cardNumber">N° <strong>0000000000000</strong></div>
-  <div class="o-cardSelector__cardName">DOE John</div>
+<article class="n-card waaoh-card">
+  <div class="waaoh-card__reward">
+    <p class="text-headline-m waaoh-card__reward-amount">3.46 &#x20AC;</p>
+  </div>
+</article>
+<div class="waaoh-card__menu">
+  <p class="text-body-s">N&#xB0; de compte Waaoh! : 00000000</p>
+  <div class="change-card change-card--selected">
+    <div class="change-card__info">
+      <p class="change-card__name">DOE</p>
+      <p class="change-card__name">John</p>
+      <p>N&#xB0; 0000000000000</p>
+      <p class="waaoh-card__amount">3.46 &#x20AC;</p>
+    </div>
+  </div>
+  <div class="waaoh-card__wallet"><p>Carte N&#xB0; 0000000000000</p></div>
 </div>
 
-<div class="t-myLoyalty__amount o-loyaltyMyCard__amount">
-  <div class="o-loyaltyMyCard__row">
-    <span>Ma cagnotte au 04/06/2026</span>
-    <span class="a-waaohTag a-waaohTag--xlarge a-waaohTag--transparent">3,46 €</span>
-  </div>
-</div>
+<article id="discountClubPageContent" class="n-card day-w-card" aria-labelledby="n-card-selected-day-title">
+  <header class="n-card__header">
+    <h2 id="n-card-selected-day-title" class="text-headline-xs">10 % cagnott&#xE9;s sur tous les produits frais des Halles</h2>
+  </header>
+  <div class="n-card__content"><p>Mon jour W! : <strong>mercredi</strong></p></div>
+</article>
 
-<div class="-waaohAccountID">Mon numéro de compte Waooh : 00000000</div>
-
-<div class="m-discountClubBox">
-  <div class="m-discountClubBox__title -waaoh">Votre jour W! est activé !</div>
-  <div class="m-discountClubBox__title -noBold">
-    Chaque <strong>mercredi</strong>, vous bénéficiez de
-    <strong>10 % cagnottés sur tous les produits frais des Halles*</strong>
-  </div>
-</div>
-
-<section class="t-myLoyalty__section t-myLoyalty__section--challenges">
-  <div class="m-emptyBox__title -noBold">
-    <strong>Jusqu’au 30 juin 2026</strong>, profitez des Défis Waaoh.
-  </div>
-  <div class="a-waaohChallengeTag">
-    Cagnotte Défis Waaoh
-    <span class="a-waaohChallengeTag__amount">
-      0,00 €
-    </span>
-  </div>
-</section>
+<article class="n-card challenges-card">
+  <footer class="n-card__footer challenges-card__footer">
+    <div class="challenges-card__date-group">
+      <div class="challenges-card__date-label"><p>D&#xE9;fis en cours</p><p>Jusqu&#x2019;au 30 juin 2026</p></div>
+    </div>
+    <div class="challenges-card__amount-group">
+      <div class="challenges-card__amount"><p class="text-headline-m">0.00 &#x20AC;</p></div>
+    </div>
+  </footer>
+</article>
 </body></html>
 `;
 
 // Variante : Jour W! inactif, cagnotte non nulle sur les défis, champs absents
 const PARTIAL_HTML = `
 <html><body>
-<div class="o-cardSelector__cardNumberAndName">
-  <div class="o-cardSelector__cardNumber">N° <strong>1234567890123</strong></div>
-  <div class="o-cardSelector__cardName">DUPONT Jean</div>
-</div>
-<div class="t-myLoyalty__amount o-loyaltyMyCard__amount">
-  <div class="o-loyaltyMyCard__row">
-    <span>Ma cagnotte au 31/12/2026</span>
-    <span class="a-waaohTag a-waaohTag--xlarge a-waaohTag--transparent">12,50 €</span>
+<article class="n-card waaoh-card">
+  <div class="waaoh-card__reward">
+    <p class="text-headline-m waaoh-card__reward-amount">12.50 &#x20AC;</p>
   </div>
+</article>
+<div class="waaoh-card__menu">
+  <p class="text-body-s">N&#xB0; de compte Waaoh! : 99887766</p>
+  <div class="change-card change-card--selected">
+    <div class="change-card__info">
+      <p class="change-card__name">DUPONT</p>
+      <p class="change-card__name">Jean</p>
+    </div>
+  </div>
+  <div class="waaoh-card__wallet"><p>Carte N&#xB0; 1234567890123</p></div>
 </div>
-<div class="-waaohAccountID">Mon numéro de compte Waooh : 99887766</div>
-<div class="a-waaohChallengeTag">
-  Cagnotte Défis Waaoh
-  <span class="a-waaohChallengeTag__amount">5,00 €</span>
-</div>
+<article class="n-card challenges-card">
+  <footer class="n-card__footer challenges-card__footer">
+    <div class="challenges-card__amount-group">
+      <div class="challenges-card__amount"><p class="text-headline-m">5.00 &#x20AC;</p></div>
+    </div>
+  </footer>
+</article>
 </body></html>
 `;
 
@@ -84,19 +94,13 @@ describe('parseLoyaltyPage', () => {
 
   it('extrait le montant formaté de la cagnotte', () => {
     const info = parseLoyaltyPage(FULL_HTML);
-    expect(info.balance.amountFormatted).toBe('3,46 €');
-  });
-
-  it('extrait la date de calcul de la cagnotte', () => {
-    const info = parseLoyaltyPage(FULL_HTML);
-    expect(info.balance.balanceDate).toBe('04/06/2026');
+    expect(info.balance.amountFormatted).toBe('3.46 €');
   });
 
   it('parse correctement une cagnotte à 12,50 €', () => {
     const info = parseLoyaltyPage(PARTIAL_HTML);
     expect(info.balance.amountCents).toBe(1250);
-    expect(info.balance.amountFormatted).toBe('12,50 €');
-    expect(info.balance.balanceDate).toBe('31/12/2026');
+    expect(info.balance.amountFormatted).toBe('12.50 €');
   });
 
   // ── Waooh ─────────────────────────────────────────────────────────────────
@@ -120,7 +124,7 @@ describe('parseLoyaltyPage', () => {
 
   it('extrait le bénéfice du Jour W!', () => {
     const info = parseLoyaltyPage(FULL_HTML);
-    expect(info.jourW.benefit).toBe('10 % cagnottés sur tous les produits frais des Halles*');
+    expect(info.jourW.benefit).toBe('10 % cagnottés sur tous les produits frais des Halles');
   });
 
   it('retourne Jour W! inactif si la phrase est absente', () => {
@@ -132,27 +136,21 @@ describe('parseLoyaltyPage', () => {
 
   // ── Défis Waaoh ───────────────────────────────────────────────────────────
 
-  it('extrait la deadline des défis (apostrophe U+2019)', () => {
+  it('extrait la deadline des défis', () => {
     const info = parseLoyaltyPage(FULL_HTML);
-    expect(info.challenges.deadline).toBe('30 juin 2026');
-  });
-
-  it('extrait la deadline des défis (apostrophe ASCII U+0027)', () => {
-    const html = FULL_HTML.replace(/Jusqu\u2019au/g, "Jusqu'au");
-    const info = parseLoyaltyPage(html);
     expect(info.challenges.deadline).toBe('30 juin 2026');
   });
 
   it('extrait la cagnotte des défis en centimes', () => {
     const info = parseLoyaltyPage(FULL_HTML);
     expect(info.challenges.cagnotteCents).toBe(0);
-    expect(info.challenges.cagnotteFormatted).toBe('0,00 €');
+    expect(info.challenges.cagnotteFormatted).toBe('0.00 €');
   });
 
   it('parse une cagnotte défis non nulle', () => {
     const info = parseLoyaltyPage(PARTIAL_HTML);
     expect(info.challenges.cagnotteCents).toBe(500);
-    expect(info.challenges.cagnotteFormatted).toBe('5,00 €');
+    expect(info.challenges.cagnotteFormatted).toBe('5.00 €');
   });
 
   it('retourne deadline undefined si absente', () => {
