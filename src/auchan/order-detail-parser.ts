@@ -115,7 +115,12 @@ function parseProducts(html: string): OrderProduct[] {
     const qtyM = windowHtml.match(/p-detail__productQuantity[^>]*>[^:]*:\s*(\d+)/);
     const quantity = qtyM ? parseInt(qtyM[1], 10) : 1;
 
-    products.push({ name, brand, quantity, price, priceFormatted, category });
+    // Un produit non livré (rupture de stock à la préparation, etc.) a quantity=0 et
+    // porte un badge "a-refund" à côté de sa quantité (ex. "Remboursement effectué").
+    const refundM = windowHtml.match(/a-refund[^>]*>\s*([^<]+?)\s*</);
+    const refundNote = refundM ? refundM[1].trim() : undefined;
+
+    products.push({ name, brand, quantity, price, priceFormatted, category, refundNote });
   }
 
   return products;

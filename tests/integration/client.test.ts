@@ -164,6 +164,50 @@ describe('AuchanClient.getCart', () => {
     expect(cart.items).toHaveLength(0);
     expect(cart.total).toBe(0);
   });
+
+  // GET /cart ne renvoie que des identifiants et des prix, jamais le nom du produit
+  // (voir enrichCartLabels) : on complète via le fragment CREST du mini-panier, qui
+  // réutilise les mêmes cartes "product-thumbnail" que /recherche.
+  const MINI_CART_HTML = `
+<html><body><article>
+  <a class="productThumbnailLink" href="/danone-yaourt/pr-C9999999"></a>
+  <p class="product-thumbnail__description"><strong>DANONE</strong> Yaourt nature</p>
+  <span class="product-attribute">4x125g</span>
+  <div class="quantity-selector"
+    data-product-id="d2b82432-fe6b-4d95-a52f-3a6a65150092"
+    data-offer-id="e5847037-0b45-5aa0-9f76-47b576787256"
+    data-seller-id="b42fbf5b-51d4-42d0-bad8-abe4e6963846"
+    data-seller-type="GROCERY">
+  </div>
+</article></body></html>`;
+
+  it('enrichit le label (nom/marque/format) depuis le fragment du mini-panier', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(cartGetFixture) } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve(MINI_CART_HTML) } as Response);
+
+    const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', fetchFn);
+    const cart = await client.getCart();
+
+    expect(cart.items[0].label).toBe('DANONE Yaourt nature');
+    expect(cart.items[0].brand).toBe('DANONE');
+    expect(cart.items[0].format).toBe('4x125g');
+
+    const [fragmentUrl] = fetchFn.mock.calls[1] as [string];
+    expect(fragmentUrl).toBe('https://www.auchan.fr/fragment/layer/mini-cart/content');
+  });
+
+  it("renvoie le panier tel quel (label vide) si l'enrichissement échoue", async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(cartGetFixture) } as Response)
+      .mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Error', text: () => Promise.resolve('') } as Response);
+
+    const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', fetchFn);
+    const cart = await client.getCart();
+
+    expect(cart.items).toHaveLength(1);
+    expect(cart.items[0].label).toBe('');
+  });
 });
 
 // ── addToCart ─────────────────────────────────────────────────────────────────

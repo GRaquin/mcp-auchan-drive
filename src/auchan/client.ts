@@ -105,9 +105,38 @@ export class AuchanClient {
     return response.json() as Promise<RawCartResponse>;
   }
 
+  /**
+   * Enrichit les lignes du panier (nom, marque, format) : GET /cart ne renvoie que des
+   * identifiants et des prix, jamais le nom du produit. Le mini-panier (icône panier du
+   * header) affiche pourtant ces infos — il les obtient via ce même fragment CREST,
+   * qui réutilise les cartes "product-thumbnail" déjà gérées par parseSearchResults.
+   * Best-effort : en cas d'échec, le panier est renvoyé tel quel (label vide).
+   */
+  private async enrichCartLabels(cart: Cart): Promise<Cart> {
+    if (cart.items.length === 0) return cart;
+
+    try {
+      const response = await this.request(
+        `${this.baseUrl}/fragment/layer/mini-cart/content`,
+        { headers: { Accept: 'application/crest', 'X-Crest-Renderer': 'cart-renderer' } },
+      );
+      const products = parseSearchResults(await response.text());
+      const byProductId = new Map(products.map((p) => [p.productId, p]));
+
+      return {
+        ...cart,
+        items: cart.items.map((item) => {
+          const info = byProductId.get(item.productId);
+          return info ? { ...item, label: info.name, brand: info.brand, format: info.format } : item;
+        }),
+      };
+    } catch {
+      return cart;
+    }
+  }
+
   // ── API publique ────────────────────────────────────────────────────────────
 
-  /** Recherche de produits dans le catalogue Drive. */
   /**
    * Recherche de produits dans le catalogue Drive.
    *
@@ -147,7 +176,7 @@ export class AuchanClient {
 
   /** Lecture du panier courant. */
   async getCart(): Promise<Cart> {
-    return mapCart(await this.getCartRaw());
+    return this.enrichCartLabels(mapCart(await this.getCartRaw()));
   }
 
   /** Informations du programme de fidélité (cagnotte, carte, Jour W!, défis). */
@@ -307,7 +336,7 @@ export class AuchanClient {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body,
     });
-    return mapCart(await response.json());
+    return this.enrichCartLabels(mapCart(await response.json()));
   }
 
   /** Mise à jour de la quantité d'un article déjà dans le panier. */
@@ -341,7 +370,7 @@ export class AuchanClient {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body,
     });
-    return mapCart(await response.json());
+    return this.enrichCartLabels(mapCart(await response.json()));
   }
 
   /** Suppression d'un article du panier (desiredQuantity: 0). */
@@ -373,7 +402,7 @@ export class AuchanClient {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body,
     });
-    return mapCart(await response.json());
+    return this.enrichCartLabels(mapCart(await response.json()));
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
