@@ -1,79 +1,64 @@
 /**
  * order-detail-parser.ts — Parse le HTML de GET /client/mes-commandes/{ref}/{num}
- * Même approche que les autres parsers : regex sur le HTML brut.
+ * Même approche que les autres parsers : regex sur le HTML brut, pas de cheerio/jsdom.
  */
 
 import type { OrderDetail, OrderProduct } from '../types.js';
 import { parsePrice, decode } from './html-utils.js';
 
 /**
- * Parse la page HTML de détail d'une commande.
+ * Parse la page HTML de détail d'une commande (refonte site ~2026, classes "p-detail__").
  *
  * Structure HTML attendue :
  * ```html
- * <!-- Tracker de statut -->
- * <li class="o-orderStatus__step o-orderStatus__step--active"><span>En cours de préparation</span></li>
+ * <span class="a-simplifiedState__label">Retirée</span>
+ * <div class="p-detail__deliveryDate">Retrait prévu le: Thursday 17 September entre 09h00 et 09h30</div>
+ * <div class="p-detail__address"><strong>Magasin</strong>
+ *   Auchan Drive Supermarché Villefranche<br>420 Rue Philippe Héron<br>69400 VILLEFRANCHE-SUR-SAÔNE
+ *   <a class="p-detail__storeLink" ...>Infos</a></div>
+ * <div class="p-detail__totalAmount"><div class="a-amount">6.04 €</div></div>
  *
- * <!-- Créneau de retrait -->
- * <p>Retrait prévu le: mardi 16 juin entre 17h00 et 17h30</p>
- *
- * <!-- Magasin -->
- * <div class="m-storeInfo">
- *   <p class="m-storeInfo__name">Auchan Drive Caluire</p>
- *   <p class="m-storeInfo__address">10 Chemin Jean Petit 69300 CALUIRE-ET-CUIRE</p>
- * </div>
- *
- * <!-- Total -->
- * <span class="m-orderSummary__totalPrice">38,62 €</span>
- *
- * <!-- Produits par catégorie -->
- * <h2 class="m-orderProductList__categoryTitle">Boucherie, volaille, poissonnerie</h2>
- * <div class="m-orderProduct">
- *   <p class="m-orderProduct__name"><strong>AUCHAN</strong> Chipolatas supérieures aux herbes</p>
- *   <span class="m-orderProduct__quantity">Quantité : 6</span>
- *   <span class="m-orderProduct__price">8,34 €</span>
- * </div>
+ * <!-- Par produit : un <script> avec un objet JS/JSON productUpdateDetail, suivi du
+ *      prix (a-amount__amount) et de la quantité (p-detail__productQuantity) -->
+ * const productUpdateDetail = {"product":{"name":"...","brand":{"name":"..."},
+ *   "category":{"level1":"..."},"id":{"ref_fo":"C1184246"}}};
+ * ...
+ * <div class="a-amount__amount">2.65 €</div>
+ * <div class="p-detail__productQuantity">Quantité : 1</div>
  * ```
  */
 export function parseOrderDetailPage(
-  html: string,
+  rawHtml: string,
   orderRef: string,
   orderNumber: string,
 ): OrderDetail {
-  // ── Statut courant (étape active du tracker) ─────────────────────────────────
-  // L'étape active porte une classe contenant "active" ou "current", ou un aria-current.
-  const statusActiveM = html.match(
-    /o-orderStatus__step[^"]*(?:active|current)[^"]*"[^>]*>[\s\S]*?<span[^>]*>([^<]+)/i,
-  ) ?? html.match(/aria-current="[^"]*"[^>]*>[\s\S]*?<span[^>]*>([^<]+)/i);
+  // Décodé en amont : les entités HTML contiennent des chiffres qui perturberaient
+  // des regex "[^0-9]*". Sans effet sur les échappements JS ("û") des <script>.
+  const html = decode(rawHtml);
 
-  // Fallback : prendre le dernier span dans la liste de statuts non vide
-  const status = statusActiveM
-    ? decode(statusActiveM[1].trim())
-    : extractLastStatus(html);
+  // ── Statut (état simplifié affiché en haut de la page) ────────────────────────
+  const statusM = html.match(/a-simplifiedState__label[^>]*>([^<]+)</);
+  const status = statusM ? statusM[1].trim() : '';
 
-  // ── Créneau de retrait ───────────────────────────────────────────────────────
-  const pickupM = html.match(/Retrait pr[eé]vu\s+le\s*:\s*([^\n<]+)/i);
-  const pickupSlot = pickupM ? decode(pickupM[1].trim()) : undefined;
+  // ── Créneau de retrait/livraison ───────────────────────────────────────────────
+  const pickupM = html.match(/p-detail__deliveryDate[^>]*>([^<]+)</);
+  const pickupSlot = pickupM ? pickupM[1].trim().replace(/\s+/g, ' ') : undefined;
 
-  // ── Magasin : nom ────────────────────────────────────────────────────────────
-  const storeNameM = html.match(/m-storeInfo__name[^>]*>([^<]+)/)
-    ?? html.match(/class="[^"]*storeName[^"]*"[^>]*>([^<]+)/);
-  const storeName = storeNameM ? decode(storeNameM[1].trim()) : '';
-
-  // ── Magasin : adresse ────────────────────────────────────────────────────────
-  const storeAddrM = html.match(/m-storeInfo__address[^>]*>([\s\S]*?)<\/p>/)
-    ?? html.match(/class="[^"]*storeAddress[^"]*"[^>]*>([\s\S]*?)<\/(?:p|div)>/);
-  const storeAddress = storeAddrM
-    ? decode(storeAddrM[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim())
+  // ── Magasin : nom + adresse (bloc "Magasin", distinct du bloc "Adresse de facturation") ──
+  const storeBlockM = html.match(
+    /<strong>Magasin<\/strong>\s*([^<]+)<br\s*\/?>([\s\S]*?)<a class="p-detail__storeLink"/,
+  );
+  const storeName = storeBlockM ? storeBlockM[1].trim() : '';
+  const storeAddress = storeBlockM
+    ? storeBlockM[2].replace(/<br\s*\/?>/g, ', ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().replace(/^,\s*/, '')
     : '';
 
   // ── Total ─────────────────────────────────────────────────────────────────────
-  const totalM = html.match(/m-orderSummary__totalPrice[^>]*>([^<]+)/)
-    ?? html.match(/orderTotal[^>]*>([^<]+)/);
-  const totalFormatted = totalM ? decode(totalM[1].trim()) : '';
+  const totalM = html.match(/p-detail__totalAmount[^>]*>[\s\S]{0,60}?a-amount[^>]*>([^<]+)</);
+  const totalFormatted = totalM ? totalM[1].trim() : '';
   const total = parsePrice(totalFormatted);
 
-  // ── Produits par catégorie ────────────────────────────────────────────────────
+  // ── Produits ──────────────────────────────────────────────────────────────────
   const products = parseProducts(html);
 
   return {
@@ -89,83 +74,53 @@ export function parseOrderDetailPage(
   };
 }
 
-function extractLastStatus(html: string): string {
-  const stepRe = /o-orderStatus__step[^>]*>[\s\S]*?<span[^>]*>([^<]+)/g;
-  let last = '';
-  let m: RegExpExecArray | null;
-  while ((m = stepRe.exec(html)) !== null) {
-    const t = decode(m[1].trim());
-    if (t) last = t;
-  }
-  return last;
-}
-
+/**
+ * Chaque produit est décrit par un objet JS embarqué (productUpdateDetail), suivi
+ * dans le HTML par son prix et sa quantité commandée.
+ */
 function parseProducts(html: string): OrderProduct[] {
   const products: OrderProduct[] = [];
 
-  // Découper en sections par catégorie
-  const catRe = /class="[^"]*m-orderProductList__categoryTitle[^"]*"[^>]*>([^<]+)/g;
-  const catMatches: Array<{ index: number; category: string }> = [];
-  let cM: RegExpExecArray | null;
-  while ((cM = catRe.exec(html)) !== null) {
-    catMatches.push({ index: cM.index, category: decode(cM[1].trim()) });
-  }
+  const detailRe = /const productUpdateDetail = (\{[\s\S]*?\});\s*window\.G = window\.G/g;
+  const matches = [...html.matchAll(detailRe)];
 
-  if (catMatches.length === 0) {
-    // Pas de catégories : parser tous les produits sans catégorie
-    return parseProductBlocks(html, '');
-  }
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i];
+    const windowEnd = i + 1 < matches.length ? matches[i + 1].index! : Math.min(html.length, match.index! + 4000);
+    const windowHtml = html.slice(match.index!, windowEnd);
 
-  for (let i = 0; i < catMatches.length; i++) {
-    const start = catMatches[i].index;
-    const end = i + 1 < catMatches.length ? catMatches[i + 1].index : html.length;
-    const section = html.slice(start, end);
-    products.push(...parseProductBlocks(section, catMatches[i].category));
-  }
+    let parsed: {
+      product?: {
+        name?: string;
+        brand?: { name?: string };
+        category?: { level1?: string };
+        price?: { displayed_tax?: number };
+      };
+    };
+    try {
+      parsed = JSON.parse(match[1]);
+    } catch {
+      continue;
+    }
 
-  return products;
-}
-
-function parseProductBlocks(html: string, category: string): OrderProduct[] {
-  const products: OrderProduct[] = [];
-
-  // Sélectionne les éléments dont la classe contient le token "m-orderProduct"
-  // (suivi de " ou espace, pas de "_"), ce qui exclut m-orderProduct__name, __quantity, etc.
-  const blockRe = /class="[^"]*m-orderProduct(?=["\s])[^"]*"[^>]*>/g;
-  const blockStarts: number[] = [];
-  let bM: RegExpExecArray | null;
-  while ((bM = blockRe.exec(html)) !== null) {
-    blockStarts.push(bM.index);
-  }
-
-  for (let i = 0; i < blockStarts.length; i++) {
-    const start = blockStarts[i];
-    const end = i + 1 < blockStarts.length ? blockStarts[i + 1] : html.length;
-    const block = html.slice(start, end);
-
-    // Nom et marque
-    const descM = block.match(
-      /m-orderProduct__name[^>]*>([\s\S]*?)<\/p>/,
-    );
-    const descHtml = descM?.[1] ?? '';
-    const brandM = descHtml.match(/<strong[^>]*>\s*([^<]+)\s*<\/strong>/);
-    const brand = brandM ? decode(brandM[1].trim()) : '';
-    const nameRaw = descHtml.replace(/<strong[^>]*>[\s\S]*?<\/strong>/g, '');
-    const name = decode(nameRaw.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim());
-
+    const name = parsed.product?.name?.trim();
     if (!name) continue;
+    const brand = parsed.product?.brand?.name ?? '';
+    const category = parsed.product?.category?.level1 ?? '';
 
-    // Quantité : "Quantité : 6" ou "x6" ou juste "6"
-    const qtyM = block.match(/(?:Quantit[eé]\s*:\s*|[×x]\s*)(\d+)/i)
-      ?? block.match(/m-orderProduct__quantity[^>]*>[^<]*?(\d+)/);
+    const priceM = windowHtml.match(/a-amount__amount[^>]*>([^<]+)</);
+    const priceFormatted = priceM ? priceM[1].trim() : '';
+    const price = priceFormatted ? parsePrice(priceFormatted) : 0;
+
+    const qtyM = windowHtml.match(/p-detail__productQuantity[^>]*>[^:]*:\s*(\d+)/);
     const quantity = qtyM ? parseInt(qtyM[1], 10) : 1;
 
-    // Prix
-    const priceM = block.match(/m-orderProduct__price[^>]*>([^<]+)/);
-    const priceFormatted = priceM ? decode(priceM[1].trim()) : '';
-    const price = parsePrice(priceFormatted);
+    // Un produit non livré (rupture de stock à la préparation, etc.) a quantity=0 et
+    // porte un badge "a-refund" à côté de sa quantité (ex. "Remboursement effectué").
+    const refundM = windowHtml.match(/a-refund[^>]*>\s*([^<]+?)\s*</);
+    const refundNote = refundM ? refundM[1].trim() : undefined;
 
-    products.push({ name, brand, quantity, price, priceFormatted, category });
+    products.push({ name, brand, quantity, price, priceFormatted, category, refundNote });
   }
 
   return products;

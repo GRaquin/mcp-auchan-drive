@@ -10,18 +10,20 @@ import cartRemoveFixture from '../fixtures/cart-remove-response.json' assert { t
 // HTML minimal simulant une page de résultats de recherche Auchan Drive
 const SEARCH_HTML = `
 <html><body>
+<article>
+<strong>ELLE &amp; VIRE</strong>
+<p class="product-thumbnail__description">Beurre tendre doux 82%MG</p>
+<div class="product-price">2,98 €</div>
+<span>11,92 € / kg</span>
+<span class="product-attribute">250g</span>
+<a href="/produit/pr-C1264653">voir</a>
 <div class="quantity-selector"
   data-product-id="acfdc139-5da2-4e2c-b652-5687fa2932b1"
   data-offer-id="19f46dfd-f09f-5533-9958-a71f53c6adbb"
   data-seller-id="b42fbf5b-51d4-42d0-bad8-abe4e6963846"
   data-seller-type="GROCERY">
 </div>
-<p class="product-thumbnail__description">Beurre tendre doux 82%MG</p>
-<article><strong>ELLE &amp; VIRE</strong></article>
-<div class="product-price">2,98 €</div>
-<span>11,92 € / kg</span>
-<span class="product-attribute">250g</span>
-<a href="/produit/pr-C1264653">voir</a>
+</article>
 </body></html>
 `;
 
@@ -69,6 +71,28 @@ function mockFetchError(status: number): typeof fetch {
     json: () => Promise.resolve({}),
     text: () => Promise.resolve(''),
   } as Response);
+}
+
+// Mock fetch retournant un HTML différent selon un fragment d'URL (pour les appels
+// qui enchaînent plusieurs requêtes, ex. getLoyaltyHistory → getLoyaltyInfo puis l'historique).
+function mockFetchByUrl(pages: Record<string, string>): typeof fetch {
+  return vi.fn().mockImplementation((url: string) => {
+    const match = Object.entries(pages).find(([fragment]) => url.includes(fragment));
+    if (!match) throw new Error(`mockFetchByUrl: URL non gérée: ${url}`);
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => {
+        try {
+          return Promise.resolve(JSON.parse(match[1]));
+        } catch {
+          return Promise.reject(new Error('not json'));
+        }
+      },
+      text: () => Promise.resolve(match[1]),
+    } as Response);
+  });
 }
 
 // ── search ────────────────────────────────────────────────────────────────────
@@ -139,6 +163,50 @@ describe('AuchanClient.getCart', () => {
 
     expect(cart.items).toHaveLength(0);
     expect(cart.total).toBe(0);
+  });
+
+  // GET /cart ne renvoie que des identifiants et des prix, jamais le nom du produit
+  // (voir enrichCartLabels) : on complète via le fragment CREST du mini-panier, qui
+  // réutilise les mêmes cartes "product-thumbnail" que /recherche.
+  const MINI_CART_HTML = `
+<html><body><article>
+  <a class="productThumbnailLink" href="/danone-yaourt/pr-C9999999"></a>
+  <p class="product-thumbnail__description"><strong>DANONE</strong> Yaourt nature</p>
+  <span class="product-attribute">4x125g</span>
+  <div class="quantity-selector"
+    data-product-id="d2b82432-fe6b-4d95-a52f-3a6a65150092"
+    data-offer-id="e5847037-0b45-5aa0-9f76-47b576787256"
+    data-seller-id="b42fbf5b-51d4-42d0-bad8-abe4e6963846"
+    data-seller-type="GROCERY">
+  </div>
+</article></body></html>`;
+
+  it('enrichit le label (nom/marque/format) depuis le fragment du mini-panier', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(cartGetFixture) } as Response)
+      .mockResolvedValueOnce({ ok: true, status: 200, text: () => Promise.resolve(MINI_CART_HTML) } as Response);
+
+    const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', fetchFn);
+    const cart = await client.getCart();
+
+    expect(cart.items[0].label).toBe('DANONE Yaourt nature');
+    expect(cart.items[0].brand).toBe('DANONE');
+    expect(cart.items[0].format).toBe('4x125g');
+
+    const [fragmentUrl] = fetchFn.mock.calls[1] as [string];
+    expect(fragmentUrl).toBe('https://www.auchan.fr/fragment/layer/mini-cart/content');
+  });
+
+  it("renvoie le panier tel quel (label vide) si l'enrichissement échoue", async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: () => Promise.resolve(cartGetFixture) } as Response)
+      .mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Error', text: () => Promise.resolve('') } as Response);
+
+    const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', fetchFn);
+    const cart = await client.getCart();
+
+    expect(cart.items).toHaveLength(1);
+    expect(cart.items[0].label).toBe('');
   });
 });
 
@@ -254,28 +322,30 @@ describe('AuchanClient.removeFromCart', () => {
 
 // ── getLoyaltyHistory ─────────────────────────────────────────────────────────
 
-const LOYALTY_HISTORY_HTML = `
+// getLoyaltyHistory() appelle d'abord getLoyaltyInfo() (pour le waoohAccountNumber),
+// puis /fidelite/ma-carte/historique?id=... : il faut donc mocker les deux URLs.
+function historyItem(date: string, channel: string, storeName: string, amount: string): string {
+  const amountClass = amount.startsWith('-') ? 'm-waaohHistory__amount -minus' : 'm-waaohHistory__amount';
+  return `
+  <div class="m-waaohHistory" role="listitem">
+    <div class="m-waaohHistory__date">${date}</div>
+    <div class="m-waaohHistory__deliveryType">${channel}</div>
+    <div class="m-waaohHistory__deliveryPlace">${storeName}</div>
+    <div class="${amountClass}">${amount}</div>
+  </div>`;
+}
+
+const MINIMAL_LOYALTY_HTML = `
 <html><body>
-<table>
-  <thead>
-    <tr><th>Date</th><th>Canal</th><th>Magasin</th><th>Montant</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>04/06/2026</td>
-      <td>Drive</td>
-      <td>Auchan Drive Saint-Genis (Chapônost)</td>
-      <td>+0,53</td>
-    </tr>
-    <tr>
-      <td>01/06/2026</td>
-      <td>Magasin</td>
-      <td>Auchan Supermarché Lyon Garibaldi</td>
-      <td>-2,00</td>
-    </tr>
-  </tbody>
-</table>
+<div class="waaoh-card__menu"><p class="text-body-s">N&#xB0; de compte Waaoh! : 00000000</p></div>
 </body></html>
+`;
+
+const LOYALTY_HISTORY_HTML = `
+<html><body><div role="list">
+  ${historyItem('04/06/2026', 'Drive', 'Auchan Drive Saint-Genis (Chapônost)', '+0.53')}
+  ${historyItem('01/06/2026', 'Magasin', 'Auchan Supermarché Lyon Garibaldi', '-2.00')}
+</div></body></html>
 `;
 
 describe('AuchanClient.getLoyaltyHistory', () => {
@@ -284,7 +354,10 @@ describe('AuchanClient.getLoyaltyHistory', () => {
       fakeCookies(),
       fastThrottler(),
       'https://www.auchan.fr',
-      mockFetchHtml(LOYALTY_HISTORY_HTML),
+      mockFetchByUrl({
+        '/fidelite/ma-carte/historique': LOYALTY_HISTORY_HTML,
+        '/fidelite/accueil': MINIMAL_LOYALTY_HTML,
+      }),
     );
     const history = await client.getLoyaltyHistory();
 
@@ -298,22 +371,29 @@ describe('AuchanClient.getLoyaltyHistory', () => {
     expect(history[1].amountFormatted).toBe('-2,00 €');
   });
 
-  it('appelle bien GET /fidelite/ma-carte/historique', async () => {
-    const fetchFn = mockFetchHtml(LOYALTY_HISTORY_HTML);
+  it('appelle bien GET /fidelite/ma-carte/historique avec le numéro de compte Waaoh', async () => {
+    const fetchFn = mockFetchByUrl({
+      '/fidelite/ma-carte/historique': LOYALTY_HISTORY_HTML,
+      '/fidelite/accueil': MINIMAL_LOYALTY_HTML,
+    });
     const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', fetchFn);
     await client.getLoyaltyHistory();
 
-    const [url] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
-    expect(url).toBe('https://www.auchan.fr/fidelite/ma-carte/historique');
+    const calls = (fetchFn as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    const historyUrl = calls.map(([u]) => u).find((u) => u.includes('historique'));
+    expect(historyUrl).toBe('https://www.auchan.fr/fidelite/ma-carte/historique?id=00000000');
   });
 
   it('retourne un tableau vide si la page ne contient aucune transaction', async () => {
-    const emptyHtml = '<html><body><table><tbody></tbody></table></body></html>';
+    const emptyHtml = '<html><body><div role="list"></div></body></html>';
     const client = new AuchanClient(
       fakeCookies(),
       fastThrottler(),
       'https://www.auchan.fr',
-      mockFetchHtml(emptyHtml),
+      mockFetchByUrl({
+        '/fidelite/ma-carte/historique': emptyHtml,
+        '/fidelite/accueil': MINIMAL_LOYALTY_HTML,
+      }),
     );
     const history = await client.getLoyaltyHistory();
     expect(history).toEqual([]);
@@ -401,31 +481,37 @@ describe('AuchanClient.searchPromos', () => {
 
 const LOYALTY_HTML = `
 <html><body>
-<div class="o-cardSelector__cardNumberAndName">
-  <div class="o-cardSelector__cardNumber">N° <strong>0000000000000</strong></div>
-  <div class="o-cardSelector__cardName">DOE John</div>
-</div>
-<div class="t-myLoyalty__amount o-loyaltyMyCard__amount">
-  <div class="o-loyaltyMyCard__row">
-    <span>Ma cagnotte au 04/06/2026</span>
-    <span class="a-waaohTag a-waaohTag--xlarge a-waaohTag--transparent">3,46 €</span>
+<article class="n-card waaoh-card">
+  <div class="waaoh-card__reward">
+    <p class="text-headline-m waaoh-card__reward-amount">3.46 &#x20AC;</p>
   </div>
-</div>
-<div class="-waaohAccountID">Mon numéro de compte Waooh : 00000000</div>
-<div class="m-discountClubBox">
-  <div class="m-discountClubBox__title -waaoh">Votre jour W! est activé !</div>
-  <div class="m-discountClubBox__title -noBold">
-    Chaque <strong>mercredi</strong>, vous bénéficiez de
-    <strong>10 % cagnottés sur tous les produits frais des Halles*</strong>
+</article>
+<div class="waaoh-card__menu">
+  <p class="text-body-s">N&#xB0; de compte Waaoh! : 00000000</p>
+  <div class="change-card change-card--selected">
+    <div class="change-card__info">
+      <p class="change-card__name">DOE</p>
+      <p class="change-card__name">John</p>
+    </div>
   </div>
+  <div class="waaoh-card__wallet"><p>Carte N&#xB0; 0000000000000</p></div>
 </div>
-<section class="t-myLoyalty__section t-myLoyalty__section--challenges">
-  <div><strong>Jusqu’au 30 juin 2026</strong>, profitez des Défis Waaoh.</div>
-  <div class="a-waaohChallengeTag">
-    Cagnotte Défis Waaoh
-    <span class="a-waaohChallengeTag__amount">0,00 €</span>
-  </div>
-</section>
+<article id="discountClubPageContent" class="n-card day-w-card" aria-labelledby="n-card-selected-day-title">
+  <header class="n-card__header">
+    <h2 id="n-card-selected-day-title" class="text-headline-xs">10 % cagnott&#xE9;s sur tous les produits frais des Halles</h2>
+  </header>
+  <div class="n-card__content"><p>Mon jour W! : <strong>mercredi</strong></p></div>
+</article>
+<article class="n-card challenges-card">
+  <footer class="n-card__footer challenges-card__footer">
+    <div class="challenges-card__date-group">
+      <div class="challenges-card__date-label"><p>D&#xE9;fis en cours</p><p>Jusqu&#x2019;au 30 juin 2026</p></div>
+    </div>
+    <div class="challenges-card__amount-group">
+      <div class="challenges-card__amount"><p class="text-headline-m">0.00 &#x20AC;</p></div>
+    </div>
+  </footer>
+</article>
 </body></html>
 `;
 
@@ -442,8 +528,7 @@ describe('AuchanClient.getLoyaltyInfo', () => {
     expect(info.card.number).toBe('0000000000000');
     expect(info.card.holder).toBe('DOE John');
     expect(info.balance.amountCents).toBe(346);
-    expect(info.balance.amountFormatted).toBe('3,46 €');
-    expect(info.balance.balanceDate).toBe('04/06/2026');
+    expect(info.balance.amountFormatted).toBe('3.46 €');
     expect(info.waoohAccountNumber).toBe('00000000');
     expect(info.jourW.active).toBe(true);
     expect(info.jourW.day).toBe('mercredi');
@@ -473,41 +558,64 @@ describe('AuchanClient.getLoyaltyInfo', () => {
 
 // ── getFavorites ──────────────────────────────────────────────────────────────
 
-const FAVORITES_HTML = `
+// getFavorites() enchaîne : liste des rayons → GET /journey (contexte actif) →
+// un fragment par rayon (/wishlist/ajax/category/{id}).
+function favShelf(id: string, title: string): string {
+  return `
+  <article class="wishlist-shelves shadow--light">
+    <div class="wishlist-shelves__texts">
+      <span class="wishlist-shelves__title bolder">${title}</span>
+      <a class="wishlist-shelves__link" href="/ca-${id}">Voir le rayon</a>
+    </div>
+  </article>`;
+}
+
+const FAVORITES_LIST_HTML = `
 <html><body>
-<section class="t-myFavorites__section">
-  <h2 class="t-myFavorites__categoryTitle">Eaux, jus, sodas, thés glacés</h2>
-  <article class="product-thumbnail">
-    <a href="/orangina-boisson-gazeuse-a-l-orange/pr-C1820950">Voir le produit</a>
-    <p class="product-thumbnail__description"><strong>ORANGINA</strong> Boisson gazeuse à l'orange</p>
-    <span class="product-attribute">1,5l</span>
-    <div class="product-price">1,93 €</div>
-    <span class="product-price-perUnit">1,29 € / l</span>
-    <span class="a-promotionLabel">-50% sur le 2ème</span>
-    <div class="quantity-selector" data-product-id="uuid-orangina">Dans mon drive</div>
-  </article>
-</section>
-<section class="t-myFavorites__section">
-  <h2 class="t-myFavorites__categoryTitle">Épicerie salée</h2>
-  <article class="product-thumbnail">
-    <a href="/panzani-pates-spaghetti/pr-C9876543">Voir le produit</a>
-    <p class="product-thumbnail__description"><strong>PANZANI</strong> Pâtes spaghetti</p>
-    <span class="product-attribute">500g</span>
-    <div class="product-price">1,20 €</div>
-    <div class="quantity-selector disabled" data-product-id="uuid-panzani">Indisponible</div>
-  </article>
-</section>
+${favShelf('n13', 'Eaux, jus, sodas, thés glacés')}
+${favShelf('n06', 'Épicerie salée')}
 </body></html>
 `;
 
+const JOURNEY_JSON = JSON.stringify({
+  activeContexts: [
+    { type: 'GROCERY', context: { seller: { id: 'seller-uuid' }, channels: ['PICK_UP'] } },
+  ],
+});
+
+const FAV_FRAGMENT_N13 = `
+<article class="product-thumbnail">
+  <a href="/orangina-boisson-gazeuse-a-l-orange/pr-C1820950">Voir le produit</a>
+  <p class="product-thumbnail__description"><strong>ORANGINA</strong> Boisson gazeuse à l'orange</p>
+  <span class="product-attribute">1,5l</span>
+  <div class="product-price">1,93 €</div>
+  <div class="product-discount-label">-50% sur le 2ème</div>
+  <div class="quantity-selector" data-product-id="uuid-orangina">Dans mon drive</div>
+</article>
+`;
+
+const FAV_FRAGMENT_N06 = `
+<article class="product-thumbnail">
+  <a href="/panzani-pates-spaghetti/pr-C9876543">Voir le produit</a>
+  <p class="product-thumbnail__description"><strong>PANZANI</strong> Pâtes spaghetti</p>
+  <span class="product-attribute">500g</span>
+  <div class="product-price">1,20 €</div>
+  <div class="quantity-selector disabled" data-product-id="uuid-panzani">Indisponible</div>
+</article>
+`;
+
+function favoritesMock(): typeof fetch {
+  return mockFetchByUrl({
+    '/journey': JOURNEY_JSON,
+    '/wishlist/ajax/category/n13': FAV_FRAGMENT_N13,
+    '/wishlist/ajax/category/n06': FAV_FRAGMENT_N06,
+    '/client/mes-produits-preferes': FAVORITES_LIST_HTML,
+  });
+}
+
 describe('AuchanClient.getFavorites', () => {
-  it('fetche /client/mes-produits-preferes et retourne les favoris parsés', async () => {
-    const client = new AuchanClient(
-      fakeCookies(),
-      fastThrottler(),
-      'https://www.auchan.fr',
-      mockFetchHtml(FAVORITES_HTML),
-    );
+  it('fetche la liste des rayons puis un fragment par rayon, et retourne les favoris parsés', async () => {
+    const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', favoritesMock());
     const favorites = await client.getFavorites();
 
     expect(favorites).toHaveLength(2);
@@ -516,25 +624,28 @@ describe('AuchanClient.getFavorites', () => {
     expect(favorites[0].category).toBe('Eaux, jus, sodas, thés glacés');
     expect(favorites[0].price).toBe(193);
     expect(favorites[0].priceFormatted).toBe('1,93 €');
-    expect(favorites[0].pricePerUnit).toBe('1,29 € / l');
     expect(favorites[0].promo).toBe('-50% sur le 2ème');
     expect(favorites[0].productCode).toBe('C1820950');
     expect(favorites[0].available).toBe(true);
 
     expect(favorites[1].name).toBe('Pâtes spaghetti');
+    expect(favorites[1].category).toBe('Épicerie salée');
     expect(favorites[1].available).toBe(false);
   });
 
-  it('appelle bien GET /client/mes-produits-preferes', async () => {
-    const fetchFn = mockFetchHtml(FAVORITES_HTML);
+  it('appelle bien GET /client/mes-produits-preferes puis /wishlist/ajax/category/{id}', async () => {
+    const fetchFn = favoritesMock();
     const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', fetchFn);
     await client.getFavorites();
 
-    const [url] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
-    expect(url).toBe('https://www.auchan.fr/client/mes-produits-preferes');
+    const calls = (fetchFn as ReturnType<typeof vi.fn>).mock.calls.map(([u]) => u as string);
+    expect(calls[0]).toBe('https://www.auchan.fr/client/mes-produits-preferes');
+    expect(calls.some((u) => u.includes('/wishlist/ajax/category/n13'))).toBe(true);
+    expect(calls.some((u) => u.includes('/wishlist/ajax/category/n06'))).toBe(true);
+    expect(calls.some((u) => u.includes('activeContexts=GROCERY--seller-uuid__PICK_UP'))).toBe(true);
   });
 
-  it('retourne [] si la page ne contient aucune section', async () => {
+  it('retourne [] si la page ne contient aucun rayon', async () => {
     const client = new AuchanClient(
       fakeCookies(),
       fastThrottler(),
@@ -558,29 +669,28 @@ describe('AuchanClient.getFavorites', () => {
 
 // ── getOrders ─────────────────────────────────────────────────────────────────
 
+function orderItem(ref: string, num: string, date: string, status: string): string {
+  return `
+  <li class="t-orders__item" data-fetch="/customer/async/orders/details/${ref}/${num}/false">
+    <div class="p-order">
+      <div class="p-order__header">
+        <div class="p-order__pointOfServiceAndReference">
+          <div class="p-order__reference">Commande n&#xB0; ${num} du ${date}</div>
+        </div>
+      </div>
+      <div class="a-simplifiedState"><span class="a-simplifiedState__label">${status}</span></div>
+      <div class="p-order__footer"><div class="p-order__footerRight">
+        <a href="/client/mes-commandes/${ref}/${num}">Voir le d&#xE9;tail</a>
+      </div></div>
+    </div>
+  </li>`;
+}
+
 const ORDERS_HTML = `
-<html><body>
-<ul>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Caluire</span>
-    <span>Commande n° 370069704 du 14 juin 2026</span>
-    <span>Enregistrée</span>
-    <span>14 Produits</span>
-    <span>38,62 €</span>
-    <a href="/client/mes-commandes/AROM-761999631/370069704">Modifier / Annuler...</a>
-  </li>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Lyon Nord</span>
-    <span>Commande n° 370000001 du 2 mai 2026</span>
-    <span>Retirée</span>
-    <span>7 Produits</span>
-    <span>21,50 €</span>
-    <a href="/client/mes-commandes/AROM-123456789/370000001">Détails</a>
-  </li>
-</ul>
-</body></html>
+<html><body><ul>
+  ${orderItem('AROM-761999631', '370069704', '14 juin 2026', 'Enregistr&#xE9;e')}
+  ${orderItem('AROM-123456789', '370000001', '2 mai 2026', 'Retir&#xE9;e')}
+</ul></body></html>
 `;
 
 describe('AuchanClient.getOrders', () => {
@@ -593,11 +703,7 @@ describe('AuchanClient.getOrders', () => {
     expect(orders[0].orderRef).toBe('AROM-761999631');
     expect(orders[0].orderNumber).toBe('370069704');
     expect(orders[0].date).toBe('14 juin 2026');
-    expect(orders[0].storeName).toBe('Auchan Drive Caluire');
     expect(orders[0].status).toBe('Enregistrée');
-    expect(orders[0].productCount).toBe(14);
-    expect(orders[0].total).toBe(3862);
-    expect(orders[0].totalFormatted).toBe('38,62 €');
     expect(orders[0].detailUrl).toBe('/client/mes-commandes/AROM-761999631/370069704');
 
     const [url] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
@@ -675,23 +781,28 @@ describe('AuchanClient.getOrders', () => {
 
 const ORDER_DETAIL_HTML = `
 <html><body>
-<ol class="o-orderStatus__list">
-  <li class="o-orderStatus__step o-orderStatus__step--active"><span>Enregistrée</span></li>
-  <li class="o-orderStatus__step"><span>En cours de préparation</span></li>
-  <li class="o-orderStatus__step"><span>Commande disponible</span></li>
-  <li class="o-orderStatus__step"><span>Retirée</span></li>
-</ol>
-<p>Retrait prévu le: mardi 16 juin entre 17h00 et 17h30</p>
-<div class="m-storeInfo">
-  <p class="m-storeInfo__name">Auchan Drive Caluire</p>
-  <p class="m-storeInfo__address">10 Chemin Jean Petit 69300 CALUIRE-ET-CUIRE</p>
+<div class="p-detail__simplifiedState">
+  <div class="a-simplifiedState"><span class="a-simplifiedState__label">Enregistr&#xE9;e</span></div>
 </div>
-<span class="m-orderSummary__totalPrice">38,62 €</span>
-<h2 class="m-orderProductList__categoryTitle">Boucherie, volaille, poissonnerie</h2>
-<div class="m-orderProduct">
-  <p class="m-orderProduct__name"><strong>AUCHAN</strong> Chipolatas supérieures aux herbes</p>
-  <span class="m-orderProduct__quantity">Quantité : 6</span>
-  <span class="m-orderProduct__price">8,34 €</span>
+<div class="p-detail__deliveryDate">Retrait pr&#xE9;vu le: mardi 16 juin entre 17h00 et 17h30</div>
+<div class="p-detail__addressesAndDelivery">
+  <div class="p-detail__address"><strong>Magasin</strong>
+    Auchan Drive Caluire<br>
+    10 Chemin Jean Petit<br>
+    69300 CALUIRE-ET-CUIRE
+    <a class="p-detail__storeLink" href="/magasins/s-1234">Infos</a></div>
+</div>
+<div class="p-detail__totalAmount"><div class="a-amount">38.62 &#x20AC;</div></div>
+<div class="p-detail__categoriesAndProductsWrapper">
+  <script>
+    const productUpdateDetail = {"product":{"name":"Chipolatas supérieures aux herbes","brand":{"name":"AUCHAN"},"category":{"level1":"Boucherie, volaille, poissonnerie"}}};
+
+    window.G = window.G || {};
+  </script>
+  <aside class="m-productItem__aside">
+    <div class="a-amount"><div class="a-amount__amount">8.34 €</div></div>
+    <div class="p-detail__productQuantity">Quantit&#xE9; : 6</div>
+  </aside>
 </div>
 </body></html>
 `;
@@ -706,7 +817,7 @@ describe('AuchanClient.getOrderDetail', () => {
     expect(detail.orderNumber).toBe('370069704');
     expect(detail.storeName).toBe('Auchan Drive Caluire');
     expect(detail.status).toBe('Enregistrée');
-    expect(detail.pickupSlot).toBe('mardi 16 juin entre 17h00 et 17h30');
+    expect(detail.pickupSlot).toBe('Retrait prévu le: mardi 16 juin entre 17h00 et 17h30');
     expect(detail.total).toBe(3862);
     expect(detail.products).toHaveLength(1);
     expect(detail.products[0].name).toBe('Chipolatas supérieures aux herbes');

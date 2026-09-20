@@ -11,6 +11,8 @@ export interface Product {
 export interface CartItem {
   productId: string;
   label: string;
+  brand?: string;
+  format?: string;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
@@ -68,6 +70,8 @@ export interface OrderProduct {
   price: number;
   priceFormatted: string;
   category: string;
+  /** Présent quand le produit n'a pas été livré (ex. "Remboursement effectué") — quantity vaut alors 0. */
+  refundNote?: string;
 }
 
 export interface OrderDetail {

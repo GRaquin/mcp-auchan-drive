@@ -13,7 +13,7 @@ import { Throttler } from './throttle.js';
 import { parseSearchResults, type SearchProduct } from './parser.js';
 import { mapCart, extractCartId } from './cart-mapper.js';
 import { parseLoyaltyPage, type LoyaltyInfo } from './loyalty-parser.js';
-import { parseFavoritesPage } from './favorites-parser.js';
+import { parseFavoriteCategories, parseFavoritesFragment } from './favorites-parser.js';
 import { parseOrdersPage, type Order } from './orders-parser.js';
 import { parseLoyaltyHistoryPage, type LoyaltyTransaction } from './loyalty-history-parser.js';
 import { parseOrderDetailPage } from './order-detail-parser.js';
@@ -56,12 +56,12 @@ export class AuchanClient {
 
   // ── Requête HTTP de base (via throttler) ────────────────────────────────────
 
-  private async request(url: string, init: RequestInit = {}): Promise<Response> {
+  private async request(url: string, init: RequestInit = {}, xhr = true): Promise<Response> {
     return this.throttler.run(async () => {
       const cookie = await this.cookieProvider.getCookie();
       const headers: Record<string, string> = {
         Cookie: cookie,
-        'X-Requested-With': 'XMLHttpRequest',
+        ...(xhr ? { 'X-Requested-With': 'XMLHttpRequest' } : {}),
         ...(init.headers as Record<string, string> | undefined),
       };
 
@@ -105,31 +105,78 @@ export class AuchanClient {
     return response.json() as Promise<RawCartResponse>;
   }
 
+  /**
+   * Enrichit les lignes du panier (nom, marque, format) : GET /cart ne renvoie que des
+   * identifiants et des prix, jamais le nom du produit. Le mini-panier (icône panier du
+   * header) affiche pourtant ces infos — il les obtient via ce même fragment CREST,
+   * qui réutilise les cartes "product-thumbnail" déjà gérées par parseSearchResults.
+   * Best-effort : en cas d'échec, le panier est renvoyé tel quel (label vide).
+   */
+  private async enrichCartLabels(cart: Cart): Promise<Cart> {
+    if (cart.items.length === 0) return cart;
+
+    try {
+      const response = await this.request(
+        `${this.baseUrl}/fragment/layer/mini-cart/content`,
+        { headers: { Accept: 'application/crest', 'X-Crest-Renderer': 'cart-renderer' } },
+      );
+      const products = parseSearchResults(await response.text());
+      const byProductId = new Map(products.map((p) => [p.productId, p]));
+
+      return {
+        ...cart,
+        items: cart.items.map((item) => {
+          const info = byProductId.get(item.productId);
+          return info ? { ...item, label: info.name, brand: info.brand, format: info.format } : item;
+        }),
+      };
+    } catch {
+      return cart;
+    }
+  }
+
   // ── API publique ────────────────────────────────────────────────────────────
 
-  /** Recherche de produits dans le catalogue Drive. */
+  /**
+   * Recherche de produits dans le catalogue Drive.
+   *
+   * Lorsque la requête correspond exactement à un nom de rayon (ex. "riz", "eau",
+   * "sucre"), le site répond par une redirection 301 vers la page catégorie
+   * correspondante au lieu d'une page de résultats. Avec l'en-tête
+   * "X-Requested-With: XMLHttpRequest", cette redirection casse silencieusement
+   * (corps vide) ; sans lui, fetch la suit normalement et la page catégorie
+   * contient les mêmes cartes produit qu'une page de résultats — d'où xhr=false ici.
+   */
   async search(query: string): Promise<SearchProduct[]> {
     const response = await this.request(
       `${this.baseUrl}/recherche?text=${encodeURIComponent(query)}`,
       { headers: { Accept: 'text/html' } },
+      false,
     );
     return parseSearchResults(await response.text());
   }
 
-  /** Recherche de produits en promotion sur le drive actif. */
+  /**
+   * Recherche de produits en promotion sur le drive actif.
+   *
+   * Contrairement aux autres routes, /boutique/promos répond 404 lorsqu'elle reçoit
+   * l'en-tête "X-Requested-With: XMLHttpRequest" (confirmé de façon reproductible :
+   * 3/3 échecs avec l'en-tête, 3/3 succès sans) — elle n'est servie qu'en tant que
+   * page complète, pas en fragment AJAX. D'où xhr=false ici uniquement.
+   */
   async searchPromos(query?: string, category?: string): Promise<SearchProduct[]> {
     const params = new URLSearchParams();
     if (query) params.set('text', query);
     if (category) params.set('category', category);
     const qs = params.toString();
     const url = `${this.baseUrl}/boutique/promos${qs ? `?${qs}` : ''}`;
-    const response = await this.request(url, { headers: { Accept: 'text/html' } });
+    const response = await this.request(url, { headers: { Accept: 'text/html' } }, false);
     return parseSearchResults(await response.text());
   }
 
   /** Lecture du panier courant. */
   async getCart(): Promise<Cart> {
-    return mapCart(await this.getCartRaw());
+    return this.enrichCartLabels(mapCart(await this.getCartRaw()));
   }
 
   /** Informations du programme de fidélité (cagnotte, carte, Jour W!, défis). */
@@ -141,11 +188,72 @@ export class AuchanClient {
   }
 
   /** Liste des produits favoris (achetés régulièrement) groupés par catégorie. */
+  /**
+   * Liste des produits favoris, groupés par rayon.
+   *
+   * Le site charge désormais les produits de chaque rayon en JS après coup (fragment
+   * CREST par rayon), plutôt que de tout inclure dans la page /client/mes-produits-preferes.
+   * On reproduit cette séquence : liste des rayons, puis un fragment par rayon, avec le
+   * paramètre "activeContexts" (contexte du drive actif) obtenu depuis GET /journey.
+   */
   async getFavorites(): Promise<FavoriteProduct[]> {
-    const response = await this.request(`${this.baseUrl}/client/mes-produits-preferes`, {
+    const listResponse = await this.request(`${this.baseUrl}/client/mes-produits-preferes`, {
       headers: { Accept: 'text/html' },
     });
-    return parseFavoritesPage(await response.text());
+    const categories = parseFavoriteCategories(await listResponse.text());
+    if (categories.length === 0) return [];
+
+    const activeContexts = await this.fetchActiveContextsString();
+
+    const products: FavoriteProduct[] = [];
+    for (const category of categories) {
+      const params = new URLSearchParams({ newFav: 'true' });
+      if (activeContexts) params.set('activeContexts', activeContexts);
+      const response = await this.request(
+        `${this.baseUrl}/wishlist/ajax/category/${category.id}?${params}`,
+        {
+          headers: {
+            Accept: 'application/crest',
+            'X-Crest-Renderer': 'wishlist-renderer',
+            Referer: `${this.baseUrl}/client/mes-produits-preferes`,
+          },
+        },
+      );
+      products.push(...parseFavoritesFragment(await response.text(), category.title));
+    }
+    return products;
+  }
+
+  /**
+   * Reconstitue la chaîne "activeContexts" attendue par certains endpoints CREST
+   * (ex. /wishlist/ajax/category/*), à partir du contexte de drive actif (GET /journey).
+   * Reproduit JourneyService.getActiveContextsString() côté client JS du site.
+   */
+  private async fetchActiveContextsString(): Promise<string> {
+    interface JourneyContext {
+      type: string;
+      context?: { seller?: { id?: string }; channels?: string[] };
+    }
+    interface JourneyResponse { activeContexts?: JourneyContext[] }
+
+    try {
+      const response = await this.request(`${this.baseUrl}/journey`, {
+        headers: { Accept: 'application/json' },
+      });
+      const journey = (await response.json()) as JourneyResponse;
+      const contexts = journey.activeContexts ?? [];
+      return contexts
+        .map((c) => {
+          const sellerId = c.context?.seller?.id;
+          const channels = c.context?.channels;
+          const suffix = sellerId && channels?.length ? `--${sellerId}__${[...channels].sort().join('__')}` : '';
+          return `${c.type}${suffix}`;
+        })
+        .sort()
+        .join(',');
+    } catch {
+      return '';
+    }
   }
 
   /** Historique des commandes drive. */
@@ -181,11 +289,17 @@ export class AuchanClient {
   }
 
 
-  /** Historique des transactions de cagnotte (3 derniers mois). */
+  /**
+   * Historique des transactions de cagnotte (3 derniers mois).
+   * Le paramètre "id" (numéro de compte Waaoh) est obligatoire côté site : sans lui,
+   * la page retombe sur un contenu éditorial générique au lieu de l'historique personnel.
+   */
   async getLoyaltyHistory(): Promise<LoyaltyTransaction[]> {
-    const response = await this.request(`${this.baseUrl}/fidelite/ma-carte/historique`, {
-      headers: { Accept: 'text/html' },
-    });
+    const { waoohAccountNumber } = await this.getLoyaltyInfo();
+    const response = await this.request(
+      `${this.baseUrl}/fidelite/ma-carte/historique?id=${encodeURIComponent(waoohAccountNumber)}`,
+      { headers: { Accept: 'text/html' } },
+    );
     return parseLoyaltyHistoryPage(await response.text());
   }
 
@@ -222,7 +336,7 @@ export class AuchanClient {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body,
     });
-    return mapCart(await response.json());
+    return this.enrichCartLabels(mapCart(await response.json()));
   }
 
   /** Mise à jour de la quantité d'un article déjà dans le panier. */
@@ -256,7 +370,7 @@ export class AuchanClient {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body,
     });
-    return mapCart(await response.json());
+    return this.enrichCartLabels(mapCart(await response.json()));
   }
 
   /** Suppression d'un article du panier (desiredQuantity: 0). */
@@ -288,7 +402,7 @@ export class AuchanClient {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body,
     });
-    return mapCart(await response.json());
+    return this.enrichCartLabels(mapCart(await response.json()));
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────

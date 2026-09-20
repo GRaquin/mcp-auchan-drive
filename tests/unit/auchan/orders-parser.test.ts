@@ -1,64 +1,47 @@
 import { describe, it, expect } from 'vitest';
 import { parseOrdersPage } from '../../../src/auchan/orders-parser.js';
 
-// HTML minimal reproduisant la structure réelle de /client/mes-commandes
+// HTML minimal reproduisant la structure réelle de /client/mes-commandes (refonte ~2026,
+// classes "p-order__" / "a-simplifiedState__"). Le nom du magasin, le nombre de produits et
+// le total ne sont plus présents dans cette liste (chargés en asynchrone côté site) :
+// voir get_order_detail pour ces champs.
+function orderItem(ref: string, num: string, date: string, status: string): string {
+  return `
+  <li class="t-orders__item" data-fetch="/customer/async/orders/details/${ref}/${num}/false" data-renderer="customer-renderer">
+    <div class="p-order">
+      <div class="p-order__header">
+        <div class="p-order__pointOfServiceAndReference">
+          <div class="a-pointOfService"><span class="a-pointOfService__label">Drive</span></div>
+          <div class="p-order__reference">Commande n&#xB0; ${num} du ${date}</div>
+        </div>
+      </div>
+      <div class="a-simplifiedState"><span class="a-simplifiedState__label">${status}</span></div>
+      <div class="p-order__footer">
+        <div class="p-order__footerRight">
+          <a href="/client/mes-commandes/${ref}/${num}" class="btn btn--white">Voir le d&#xE9;tail</a>
+        </div>
+      </div>
+    </div>
+  </li>`;
+}
+
 const THREE_ORDERS_HTML = `
-<html><body>
-<ul>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Caluire</span>
-    <span>Commande n° 370069704 du 14 juin 2026</span>
-    <span>Enregistrée</span>
-    <span>14 Produits</span>
-    <span>38,62 €</span>
-    <a href="/client/mes-commandes/AROM-761999631/370069704">Modifier / Annuler...</a>
-  </li>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Lyon Nord</span>
-    <span>Commande n° 370000001 du 2 mai 2026</span>
-    <span>Retirée</span>
-    <span>7 Produits</span>
-    <span>21,50 €</span>
-    <a href="/client/mes-commandes/AROM-123456789/370000001">Détails</a>
-  </li>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Caluire</span>
-    <span>Commande n° 369000002 du 10 avril 2026</span>
-    <span>Annulée</span>
-    <span>3 Produits</span>
-    <span>9,99 €</span>
-    <a href="/client/mes-commandes/AROM-987654321/369000002">Détails</a>
-  </li>
-</ul>
-</body></html>
+<html><body><ul>
+  ${orderItem('AROM-761999631', '370069704', '14 juin 2026', 'Enregistr&#xE9;e')}
+  ${orderItem('AROM-123456789', '370000001', '2 mai 2026', 'Retir&#xE9;e')}
+  ${orderItem('AROM-987654321', '369000002', '10 avril 2026', 'Annul&#xE9;e')}
+</ul></body></html>
 `;
 
-// HTML avec une seule commande "En cours de préparation"
 const SINGLE_ORDER_HTML = `
-<html><body>
-<ul>
-  <li>
-    <span>Drive</span>
-    <span>Auchan Drive Paris Est</span>
-    <span>Commande n° 400000001 du 16 juin 2026</span>
-    <span>En cours de préparation</span>
-    <span>5 Produits</span>
-    <span>15,00 €</span>
-    <a href="/client/mes-commandes/AROM-111111111/400000001">Modifier / Annuler...</a>
-  </li>
-</ul>
-</body></html>
+<html><body><ul>
+  ${orderItem('AROM-111111111', '400000001', '16 juin 2026', 'En cours de pr&#xE9;paration')}
+</ul></body></html>
 `;
 
-// HTML sans aucune commande (liste vide)
 const EMPTY_HTML = `<html><body><ul></ul></body></html>`;
 
 describe('parseOrdersPage', () => {
-  // ── Liste de 3 commandes ────────────────────────────────────────────────────
-
   it('retourne 3 commandes depuis le HTML avec 3 entrées', () => {
     const orders = parseOrdersPage(THREE_ORDERS_HTML);
     expect(orders).toHaveLength(3);
@@ -85,38 +68,11 @@ describe('parseOrdersPage', () => {
     expect(orders[2].date).toBe('10 avril 2026');
   });
 
-  it('extrait le nom du magasin', () => {
-    const orders = parseOrdersPage(THREE_ORDERS_HTML);
-    expect(orders[0].storeName).toBe('Auchan Drive Caluire');
-    expect(orders[1].storeName).toBe('Auchan Drive Lyon Nord');
-  });
-
   it('extrait le statut', () => {
     const orders = parseOrdersPage(THREE_ORDERS_HTML);
     expect(orders[0].status).toBe('Enregistrée');
     expect(orders[1].status).toBe('Retirée');
     expect(orders[2].status).toBe('Annulée');
-  });
-
-  it('extrait le nombre de produits', () => {
-    const orders = parseOrdersPage(THREE_ORDERS_HTML);
-    expect(orders[0].productCount).toBe(14);
-    expect(orders[1].productCount).toBe(7);
-    expect(orders[2].productCount).toBe(3);
-  });
-
-  it('extrait le total en centimes', () => {
-    const orders = parseOrdersPage(THREE_ORDERS_HTML);
-    expect(orders[0].total).toBe(3862);
-    expect(orders[1].total).toBe(2150);
-    expect(orders[2].total).toBe(999);
-  });
-
-  it('extrait le total formaté', () => {
-    const orders = parseOrdersPage(THREE_ORDERS_HTML);
-    expect(orders[0].totalFormatted).toBe('38,62 €');
-    expect(orders[1].totalFormatted).toBe('21,50 €');
-    expect(orders[2].totalFormatted).toBe('9,99 €');
   });
 
   it('extrait l\'URL de détail', () => {
@@ -125,7 +81,14 @@ describe('parseOrdersPage', () => {
     expect(orders[1].detailUrl).toBe('/client/mes-commandes/AROM-123456789/370000001');
   });
 
-  // ── Statut "En cours de préparation" ───────────────────────────────────────
+  // Magasin / nombre de produits / total : non disponibles sur la page liste
+  // (placeholders côté site, chargés en asynchrone) — voir get_order_detail.
+  it('laisse magasin/nombre de produits/total vides (non disponibles sur la liste)', () => {
+    const orders = parseOrdersPage(THREE_ORDERS_HTML);
+    expect(orders[0].storeName).toBe('');
+    expect(orders[0].productCount).toBe(0);
+    expect(orders[0].total).toBe(0);
+  });
 
   it('parse le statut "En cours de préparation"', () => {
     const orders = parseOrdersPage(SINGLE_ORDER_HTML);
@@ -133,11 +96,7 @@ describe('parseOrdersPage', () => {
     expect(orders[0].status).toBe('En cours de préparation');
     expect(orders[0].orderRef).toBe('AROM-111111111');
     expect(orders[0].orderNumber).toBe('400000001');
-    expect(orders[0].total).toBe(1500);
-    expect(orders[0].productCount).toBe(5);
   });
-
-  // ── Edge case : liste vide ──────────────────────────────────────────────────
 
   it('retourne [] pour une page sans commande', () => {
     const orders = parseOrdersPage(EMPTY_HTML);

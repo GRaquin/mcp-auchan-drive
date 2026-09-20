@@ -168,8 +168,8 @@ export class StoreLocator {
       if (!id) continue;
 
       const type = attr(tag, 'data-type') ?? 'DRIVE';
-      const zipcode = attr(tag, 'data-zipcode') ?? '';
-      const city = attr(tag, 'data-city') ?? '';
+      const zipcode = decode(attr(tag, 'data-zipcode') ?? '');
+      const city = decode(attr(tag, 'data-city') ?? '');
 
       // Contexte HTML du bloc store (500 chars suffisent pour le nom + distance)
       const ctx = html.slice(wrapperMatch.index, wrapperMatch.index + 1500);
