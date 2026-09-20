@@ -56,12 +56,12 @@ export class AuchanClient {
 
   // ── Requête HTTP de base (via throttler) ────────────────────────────────────
 
-  private async request(url: string, init: RequestInit = {}): Promise<Response> {
+  private async request(url: string, init: RequestInit = {}, xhr = true): Promise<Response> {
     return this.throttler.run(async () => {
       const cookie = await this.cookieProvider.getCookie();
       const headers: Record<string, string> = {
         Cookie: cookie,
-        'X-Requested-With': 'XMLHttpRequest',
+        ...(xhr ? { 'X-Requested-With': 'XMLHttpRequest' } : {}),
         ...(init.headers as Record<string, string> | undefined),
       };
 
@@ -116,14 +116,21 @@ export class AuchanClient {
     return parseSearchResults(await response.text());
   }
 
-  /** Recherche de produits en promotion sur le drive actif. */
+  /**
+   * Recherche de produits en promotion sur le drive actif.
+   *
+   * Contrairement aux autres routes, /boutique/promos répond 404 lorsqu'elle reçoit
+   * l'en-tête "X-Requested-With: XMLHttpRequest" (confirmé de façon reproductible :
+   * 3/3 échecs avec l'en-tête, 3/3 succès sans) — elle n'est servie qu'en tant que
+   * page complète, pas en fragment AJAX. D'où xhr=false ici uniquement.
+   */
   async searchPromos(query?: string, category?: string): Promise<SearchProduct[]> {
     const params = new URLSearchParams();
     if (query) params.set('text', query);
     if (category) params.set('category', category);
     const qs = params.toString();
     const url = `${this.baseUrl}/boutique/promos${qs ? `?${qs}` : ''}`;
-    const response = await this.request(url, { headers: { Accept: 'text/html' } });
+    const response = await this.request(url, { headers: { Accept: 'text/html' } }, false);
     return parseSearchResults(await response.text());
   }
 
