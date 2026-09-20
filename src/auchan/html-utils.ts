@@ -12,6 +12,7 @@ const NAMED_ENTITIES: Record<string, string> = {
   '&gt;': '>',
   '&quot;': '"',
   '&#39;': "'",
+  '&apos;': "'",
   '&nbsp;': ' ',
 };
 
@@ -24,5 +25,5 @@ export function decode(text: string): string {
   return text
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
-    .replace(/&(?:amp|lt|gt|quot|#39|nbsp);/g, (m) => NAMED_ENTITIES[m] ?? m);
+    .replace(/&(?:amp|lt|gt|quot|#39|apos|nbsp);/g, (m) => NAMED_ENTITIES[m] ?? m);
 }

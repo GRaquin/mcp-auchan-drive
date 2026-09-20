@@ -13,7 +13,7 @@ import { Throttler } from './throttle.js';
 import { parseSearchResults, type SearchProduct } from './parser.js';
 import { mapCart, extractCartId } from './cart-mapper.js';
 import { parseLoyaltyPage, type LoyaltyInfo } from './loyalty-parser.js';
-import { parseFavoritesPage } from './favorites-parser.js';
+import { parseFavoriteCategories, parseFavoritesFragment } from './favorites-parser.js';
 import { parseOrdersPage, type Order } from './orders-parser.js';
 import { parseLoyaltyHistoryPage, type LoyaltyTransaction } from './loyalty-history-parser.js';
 import { parseOrderDetailPage } from './order-detail-parser.js';
@@ -141,11 +141,72 @@ export class AuchanClient {
   }
 
   /** Liste des produits favoris (achetés régulièrement) groupés par catégorie. */
+  /**
+   * Liste des produits favoris, groupés par rayon.
+   *
+   * Le site charge désormais les produits de chaque rayon en JS après coup (fragment
+   * CREST par rayon), plutôt que de tout inclure dans la page /client/mes-produits-preferes.
+   * On reproduit cette séquence : liste des rayons, puis un fragment par rayon, avec le
+   * paramètre "activeContexts" (contexte du drive actif) obtenu depuis GET /journey.
+   */
   async getFavorites(): Promise<FavoriteProduct[]> {
-    const response = await this.request(`${this.baseUrl}/client/mes-produits-preferes`, {
+    const listResponse = await this.request(`${this.baseUrl}/client/mes-produits-preferes`, {
       headers: { Accept: 'text/html' },
     });
-    return parseFavoritesPage(await response.text());
+    const categories = parseFavoriteCategories(await listResponse.text());
+    if (categories.length === 0) return [];
+
+    const activeContexts = await this.fetchActiveContextsString();
+
+    const products: FavoriteProduct[] = [];
+    for (const category of categories) {
+      const params = new URLSearchParams({ newFav: 'true' });
+      if (activeContexts) params.set('activeContexts', activeContexts);
+      const response = await this.request(
+        `${this.baseUrl}/wishlist/ajax/category/${category.id}?${params}`,
+        {
+          headers: {
+            Accept: 'application/crest',
+            'X-Crest-Renderer': 'wishlist-renderer',
+            Referer: `${this.baseUrl}/client/mes-produits-preferes`,
+          },
+        },
+      );
+      products.push(...parseFavoritesFragment(await response.text(), category.title));
+    }
+    return products;
+  }
+
+  /**
+   * Reconstitue la chaîne "activeContexts" attendue par certains endpoints CREST
+   * (ex. /wishlist/ajax/category/*), à partir du contexte de drive actif (GET /journey).
+   * Reproduit JourneyService.getActiveContextsString() côté client JS du site.
+   */
+  private async fetchActiveContextsString(): Promise<string> {
+    interface JourneyContext {
+      type: string;
+      context?: { seller?: { id?: string }; channels?: string[] };
+    }
+    interface JourneyResponse { activeContexts?: JourneyContext[] }
+
+    try {
+      const response = await this.request(`${this.baseUrl}/journey`, {
+        headers: { Accept: 'application/json' },
+      });
+      const journey = (await response.json()) as JourneyResponse;
+      const contexts = journey.activeContexts ?? [];
+      return contexts
+        .map((c) => {
+          const sellerId = c.context?.seller?.id;
+          const channels = c.context?.channels;
+          const suffix = sellerId && channels?.length ? `--${sellerId}__${[...channels].sort().join('__')}` : '';
+          return `${c.type}${suffix}`;
+        })
+        .sort()
+        .join(',');
+    } catch {
+      return '';
+    }
   }
 
   /** Historique des commandes drive. */

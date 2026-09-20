@@ -1,153 +1,128 @@
 /**
- * favorites-parser.ts — Parse le HTML de GET /client/mes-produits-preferes
- * Même approche que parser.ts : regex sur le HTML brut, pas de cheerio/jsdom.
+ * favorites-parser.ts — Parse les pages liées aux produits favoris (refonte site ~2026)
  *
- * Structure de la page :
- *   - Sections de catégories (class "t-myFavorites__section")
- *   - Titre de catégorie (class "t-myFavorites__categoryTitle")
- *   - Cartes produits similaires à /recherche (product-thumbnail__description, product-price…)
+ * Le site a remplacé l'ancienne page tout-en-un /client/mes-produits-preferes
+ * (sections par catégorie avec produits inline) par une architecture en deux temps :
+ *   1. GET /client/mes-produits-preferes renvoie seulement la liste des rayons
+ *      ("wishlist-shelves"), chaque rayon ayant un id (ex. "n02") et un titre.
+ *   2. Pour chaque rayon, les produits sont chargés en JS via
+ *      GET /wishlist/ajax/category/{id}?activeContexts=...&newFav=true
+ *      (fragment CREST, même structure de carte produit que /recherche).
+ *
+ * Voir client.ts#getFavorites() pour l'orchestration des deux étapes et le calcul
+ * du paramètre activeContexts (contexte de drive actif, obligatoire).
  */
 
 import type { FavoriteProduct } from '../types.js';
 import { parsePrice, decode } from './html-utils.js';
 
-// Taille de la fenêtre de contexte utilisée en l'absence de balises <article>
-const FALLBACK_CTX_BEFORE = 500;  // chars en arrière depuis le lien produit
-const FALLBACK_CTX_AFTER  = 3000; // chars en avant depuis le lien produit
+export interface FavoriteCategory {
+  id: string;
+  title: string;
+}
+
+/** Extrait la liste des rayons ("Voir le rayon" → id + titre) de la page principale. */
+export function parseFavoriteCategories(rawHtml: string): FavoriteCategory[] {
+  const html = decode(rawHtml);
+  const categories: FavoriteCategory[] = [];
+
+  const blockStarts: number[] = [];
+  const blockRe = /<article[^>]+class="[^"]*wishlist-shelves[^"]*"/g;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(html)) !== null) blockStarts.push(m.index);
+
+  for (let i = 0; i < blockStarts.length; i++) {
+    const start = blockStarts[i];
+    const end = i + 1 < blockStarts.length ? blockStarts[i + 1] : html.length;
+    const block = html.slice(start, end);
+
+    const idM = block.match(/href="\/ca-([a-zA-Z0-9]+)"/);
+    const titleM = block.match(/wishlist-shelves__title[^>]*>\s*([^<]+?)\s*</);
+    if (!idM || !titleM) continue;
+
+    categories.push({ id: idM[1], title: titleM[1].trim() });
+  }
+
+  return categories;
+}
 
 /**
- * Parse le HTML brut de /client/mes-produits-preferes et retourne un tableau plat
- * de FavoriteProduct. Chaque produit porte un champ `category` issu de la section
- * de la page dans laquelle il apparaît.
- *
- * Stratégie :
- *   1. Repérer les débuts de sections de catégorie (class "t-myFavorites__section")
- *   2. Pour chaque section, extraire le titre de catégorie
- *   3. Pour chaque produit (href "/…/pr-Cxxxxxx"), extraire les champs depuis le contexte HTML
+ * Parse un fragment produit renvoyé par /wishlist/ajax/category/{id} : même carte
+ * "product-thumbnail" que sur /recherche (voir parser.ts), avec en plus le lien produit
+ * complet et une éventuelle promotion — champs propres à FavoriteProduct.
  */
-export function parseFavoritesPage(html: string): FavoriteProduct[] {
-  const results: FavoriteProduct[] = [];
+export function parseFavoritesFragment(rawHtml: string, category: string): FavoriteProduct[] {
+  const html = decode(rawHtml);
+  const products: FavoriteProduct[] = [];
 
-  // ── Localiser les sections de catégorie ──────────────────────────────────────
-  const sectionClassRe = /class="[^"]*t-myFavorites__section[^"]*"/g;
-  const sectionStarts: number[] = [];
-  let sMatch: RegExpExecArray | null;
+  // Borne le contexte de chaque produit par les balises <article> (une carte produit
+  // par <article>) plutôt qu'une fenêtre fixe, pour éviter toute contamination entre
+  // deux cartes proches l'une de l'autre.
+  const articleStarts: number[] = [];
+  const artRe = /<article/g;
+  let artM: RegExpExecArray | null;
+  while ((artM = artRe.exec(html)) !== null) articleStarts.push(artM.index);
 
-  while ((sMatch = sectionClassRe.exec(html)) !== null) {
-    // Remonter jusqu'au '<' ouvrant du tag
-    let tagStart = sMatch.index;
-    while (tagStart > 0 && html[tagStart] !== '<') tagStart--;
-    sectionStarts.push(tagStart);
-  }
+  const tagRe = /<div[^>]+data-product-id="[^"]+"[^>]*>/g;
+  let tagMatch: RegExpExecArray | null;
 
-  if (sectionStarts.length === 0) return results;
+  while ((tagMatch = tagRe.exec(html)) !== null) {
+    const tag = tagMatch[0];
+    if (!tag.includes('quantity-selector')) continue;
 
-  // ── Parser chaque section ────────────────────────────────────────────────────
-  for (let i = 0; i < sectionStarts.length; i++) {
-    const sStart = sectionStarts[i];
-    const sEnd = i + 1 < sectionStarts.length ? sectionStarts[i + 1] : html.length;
-    const sHtml = html.slice(sStart, sEnd);
-
-    // Titre de catégorie
-    const catM = sHtml.match(/t-myFavorites__categoryTitle[^>]*>([^<]+)</);
-    const category = catM ? decode(catM[1].trim()) : '';
-
-    // ── Délimitation des cartes produits ────────────────────────────────────
-    // On utilise <article comme frontière entre cartes : chaque produit est
-    // encapsulé dans un <article ...>. Sinon, on délimite par les liens produits.
-    const articleStarts: number[] = [];
-    const artRe = /<article/g;
-    let artM: RegExpExecArray | null;
-    while ((artM = artRe.exec(sHtml)) !== null) {
-      articleStarts.push(artM.index);
-    }
-
-    // ── Produits dans la section ──────────────────────────────────────────────
-    // Ancrage : href vers un produit de type "/slug/pr-Cxxxxxx"
-    const productLinkRe = /href="(\/[^"]*\/pr-(C\d+))"/g;
-    let pMatch: RegExpExecArray | null;
-    const seen = new Set<string>();
-
-    while ((pMatch = productLinkRe.exec(sHtml)) !== null) {
-      const productUrl = pMatch[1];
-      const productCode = pMatch[2];
-
-      // Dédoublonnage (plusieurs <a> peuvent pointer vers le même produit)
-      if (seen.has(productCode)) continue;
-      seen.add(productCode);
-
-      const linkPos = pMatch.index;
-
-      // Contexte borné par les <article> (évite le débordement vers la carte précédente)
-      let ctxStart = 0;
-      let ctxEnd = sHtml.length;
-
-      if (articleStarts.length > 0) {
-        // Début : dernier <article avant le lien courant
-        for (const pos of articleStarts) {
-          if (pos <= linkPos) ctxStart = pos;
-        }
-        // Fin : premier <article après le lien courant
-        for (const pos of articleStarts) {
-          if (pos > linkPos) { ctxEnd = pos; break; }
-        }
-      } else {
-        // Fallback : fenêtre fixe autour du lien
-        ctxStart = Math.max(0, linkPos - FALLBACK_CTX_BEFORE);
-        ctxEnd = Math.min(sHtml.length, linkPos + FALLBACK_CTX_AFTER);
+    let start = 0;
+    let end = html.length;
+    if (articleStarts.length > 0) {
+      for (const pos of articleStarts) {
+        if (pos <= tagMatch.index) start = pos;
       }
-
-      const ctx = sHtml.slice(ctxStart, ctxEnd);
-
-      // ── Nom et marque ───────────────────────────────────────────────────────
-      const descM = ctx.match(
-        /class="[^"]*product-thumbnail__description[^"]*"[^>]*>([\s\S]*?)<\/p>/,
-      );
-      const descHtml = descM?.[1] ?? '';
-
-      const brandM = descHtml.match(/<strong[^>]*>\s*([^<]+)\s*<\/strong>/);
-      const brand = brandM ? decode(brandM[1].trim()) : undefined;
-
-      // Nom = description sans le tag <strong> de marque.
-      const nameRaw = descHtml.replace(/<strong[^>]*>[\s\S]*?<\/strong>/g, '');
-      const name = decode(nameRaw.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim());
-
-      // ── Format / conditionnement ─────────────────────────────────────────────
-      const fmtM = ctx.match(/class="[^"]*product-attribute[^"]*"[^>]*>\s*([^<]+)/);
-      const format = fmtM ? decode(fmtM[1].trim()) : undefined;
-
-      // ── Prix principal ───────────────────────────────────────────────────────
-      const priceM = ctx.match(/class="[^"]*product-price[^"]*"[^>]*>\s*([\d\s,.'€]+)/);
-      const priceFormatted = priceM ? priceM[1].trim() : '';
-      const price = parsePrice(priceFormatted);
-
-      // ── Prix à l'unité (ex : "1,29 € / l") ──────────────────────────────────
-      const ppuM = ctx.match(/class="[^"]*product-price-perUnit[^"]*"[^>]*>\s*([^<]+)/);
-      const pricePerUnit = ppuM ? decode(ppuM[1].trim()) : undefined;
-
-      // ── Promotion ────────────────────────────────────────────────────────────
-      const promoM = ctx.match(/class="[^"]*a-promotionLabel[^"]*"[^>]*>\s*([^<]+)/);
-      const promo = promoM ? decode(promoM[1].trim()) : undefined;
-
-      // ── Disponibilité ────────────────────────────────────────────────────────
-      const qsM = ctx.match(/<[^>]+class="[^"]*quantity-selector[^"]*"[^>]*>/);
-      const available = qsM != null && !qsM[0].includes('disabled');
-
-      results.push({
-        name,
-        brand,
-        format,
-        category,
-        price,
-        priceFormatted,
-        pricePerUnit,
-        promo,
-        productUrl,
-        productCode,
-        available,
-      });
+      for (const pos of articleStarts) {
+        if (pos > tagMatch.index) { end = pos; break; }
+      }
     }
+    const ctx = html.slice(start, end);
+
+    const descM = ctx.match(/product-thumbnail__description[^>]*>([\s\S]*?)<\/p>/);
+    const descHtml = descM?.[1] ?? '';
+    const brandM = descHtml.match(/<strong[^>]*>\s*([^<]+)\s*<\/strong>/);
+    const brand = brandM ? brandM[1].trim() : undefined;
+    const name = descHtml.replace(/<strong[^>]*>[\s\S]*?<\/strong>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!name) continue;
+
+    const fmtM = ctx.match(/product-attribute[^>]*>\s*([^<]+?)\s*</);
+    const format = fmtM ? fmtM[1].trim() : undefined;
+
+    const priceM = ctx.match(/class="product-price[^"]*"[^>]*>\s*([\d\s,.'€]+)/);
+    const priceFormatted = priceM ? priceM[1].trim() : '';
+    const price = priceFormatted ? parsePrice(priceFormatted) : 0;
+
+    const ppuM = ctx.match(/([\d]+[,.][\d]{2})\s*€\s*\/\s*(kg|l)/i);
+    const pricePerUnit = ppuM ? `${ppuM[1]} € / ${ppuM[2]}` : undefined;
+
+    const promoM = ctx.match(/product-discount-label[^>]*>\s*([^<]+?)\s*</);
+    const promo = promoM ? promoM[1].trim() : undefined;
+
+    const urlM = ctx.match(/href="(\/[^"]*\/pr-(C\d+))"/);
+    const productUrl = urlM ? urlM[1] : '';
+    const productCode = urlM ? urlM[2] : undefined;
+
+    const qsM = ctx.match(/<div[^>]+class="[^"]*quantity-selector[^"]*"[^>]*>/);
+    const available = qsM != null && !qsM[0].includes('disabled');
+
+    products.push({
+      name,
+      brand,
+      format,
+      category,
+      price,
+      priceFormatted,
+      pricePerUnit,
+      promo,
+      productUrl,
+      productCode,
+      available,
+    });
   }
 
-  return results;
+  return products;
 }
