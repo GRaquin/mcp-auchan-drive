@@ -71,6 +71,22 @@ function mockFetchError(status: number): typeof fetch {
   } as Response);
 }
 
+// Mock fetch retournant un HTML différent selon un fragment d'URL (pour les appels
+// qui enchaînent plusieurs requêtes, ex. getLoyaltyHistory → getLoyaltyInfo puis l'historique).
+function mockFetchByUrl(pages: Record<string, string>): typeof fetch {
+  return vi.fn().mockImplementation((url: string) => {
+    const match = Object.entries(pages).find(([fragment]) => url.includes(fragment));
+    if (!match) throw new Error(`mockFetchByUrl: URL non gérée: ${url}`);
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.reject(new Error('not json')),
+      text: () => Promise.resolve(match[1]),
+    } as Response);
+  });
+}
+
 // ── search ────────────────────────────────────────────────────────────────────
 
 describe('AuchanClient.search', () => {
@@ -254,28 +270,30 @@ describe('AuchanClient.removeFromCart', () => {
 
 // ── getLoyaltyHistory ─────────────────────────────────────────────────────────
 
-const LOYALTY_HISTORY_HTML = `
+// getLoyaltyHistory() appelle d'abord getLoyaltyInfo() (pour le waoohAccountNumber),
+// puis /fidelite/ma-carte/historique?id=... : il faut donc mocker les deux URLs.
+function historyItem(date: string, channel: string, storeName: string, amount: string): string {
+  const amountClass = amount.startsWith('-') ? 'm-waaohHistory__amount -minus' : 'm-waaohHistory__amount';
+  return `
+  <div class="m-waaohHistory" role="listitem">
+    <div class="m-waaohHistory__date">${date}</div>
+    <div class="m-waaohHistory__deliveryType">${channel}</div>
+    <div class="m-waaohHistory__deliveryPlace">${storeName}</div>
+    <div class="${amountClass}">${amount}</div>
+  </div>`;
+}
+
+const MINIMAL_LOYALTY_HTML = `
 <html><body>
-<table>
-  <thead>
-    <tr><th>Date</th><th>Canal</th><th>Magasin</th><th>Montant</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>04/06/2026</td>
-      <td>Drive</td>
-      <td>Auchan Drive Saint-Genis (Chapônost)</td>
-      <td>+0,53</td>
-    </tr>
-    <tr>
-      <td>01/06/2026</td>
-      <td>Magasin</td>
-      <td>Auchan Supermarché Lyon Garibaldi</td>
-      <td>-2,00</td>
-    </tr>
-  </tbody>
-</table>
+<div class="waaoh-card__menu"><p class="text-body-s">N&#xB0; de compte Waaoh! : 00000000</p></div>
 </body></html>
+`;
+
+const LOYALTY_HISTORY_HTML = `
+<html><body><div role="list">
+  ${historyItem('04/06/2026', 'Drive', 'Auchan Drive Saint-Genis (Chapônost)', '+0.53')}
+  ${historyItem('01/06/2026', 'Magasin', 'Auchan Supermarché Lyon Garibaldi', '-2.00')}
+</div></body></html>
 `;
 
 describe('AuchanClient.getLoyaltyHistory', () => {
@@ -284,7 +302,10 @@ describe('AuchanClient.getLoyaltyHistory', () => {
       fakeCookies(),
       fastThrottler(),
       'https://www.auchan.fr',
-      mockFetchHtml(LOYALTY_HISTORY_HTML),
+      mockFetchByUrl({
+        '/fidelite/ma-carte/historique': LOYALTY_HISTORY_HTML,
+        '/fidelite/accueil': MINIMAL_LOYALTY_HTML,
+      }),
     );
     const history = await client.getLoyaltyHistory();
 
@@ -298,22 +319,29 @@ describe('AuchanClient.getLoyaltyHistory', () => {
     expect(history[1].amountFormatted).toBe('-2,00 €');
   });
 
-  it('appelle bien GET /fidelite/ma-carte/historique', async () => {
-    const fetchFn = mockFetchHtml(LOYALTY_HISTORY_HTML);
+  it('appelle bien GET /fidelite/ma-carte/historique avec le numéro de compte Waaoh', async () => {
+    const fetchFn = mockFetchByUrl({
+      '/fidelite/ma-carte/historique': LOYALTY_HISTORY_HTML,
+      '/fidelite/accueil': MINIMAL_LOYALTY_HTML,
+    });
     const client = new AuchanClient(fakeCookies(), fastThrottler(), 'https://www.auchan.fr', fetchFn);
     await client.getLoyaltyHistory();
 
-    const [url] = (fetchFn as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
-    expect(url).toBe('https://www.auchan.fr/fidelite/ma-carte/historique');
+    const calls = (fetchFn as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    const historyUrl = calls.map(([u]) => u).find((u) => u.includes('historique'));
+    expect(historyUrl).toBe('https://www.auchan.fr/fidelite/ma-carte/historique?id=00000000');
   });
 
   it('retourne un tableau vide si la page ne contient aucune transaction', async () => {
-    const emptyHtml = '<html><body><table><tbody></tbody></table></body></html>';
+    const emptyHtml = '<html><body><div role="list"></div></body></html>';
     const client = new AuchanClient(
       fakeCookies(),
       fastThrottler(),
       'https://www.auchan.fr',
-      mockFetchHtml(emptyHtml),
+      mockFetchByUrl({
+        '/fidelite/ma-carte/historique': emptyHtml,
+        '/fidelite/accueil': MINIMAL_LOYALTY_HTML,
+      }),
     );
     const history = await client.getLoyaltyHistory();
     expect(history).toEqual([]);

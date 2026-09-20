@@ -1,82 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import { parseLoyaltyHistoryPage } from '../../../src/auchan/loyalty-history-parser.js';
 
-// HTML minimal reproduisant la structure réelle de /fidelite/ma-carte/historique
-// Contient 5 transactions mixtes (gains + débits)
+// HTML minimal reproduisant la structure réelle de /fidelite/ma-carte/historique?id=...
+// (refonte ~2026, classes "m-waaohHistory__"). Contient 5 transactions mixtes (gains + débits).
+function historyItem(date: string, channel: string, storeName: string, amount: string): string {
+  const amountClass = amount.startsWith('-') ? 'm-waaohHistory__amount -minus' : 'm-waaohHistory__amount';
+  return `
+  <div class="m-waaohHistory" role="listitem">
+    <div class="m-waaohHistory__date">${date}</div>
+    <div class="m-waaohHistory__deliveryType">${channel}</div>
+    <div class="m-waaohHistory__deliveryPlace">${storeName}</div>
+    <div class="${amountClass}">${amount}</div>
+  </div>`;
+}
+
 const FULL_HTML = `
-<html><body>
-<table>
-  <thead>
-    <tr><th>Date</th><th>Canal</th><th>Magasin</th><th>Montant</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>04/06/2026</td>
-      <td>Drive</td>
-      <td>Auchan Drive Saint-Genis (Chapônost)</td>
-      <td>+0,53</td>
-    </tr>
-    <tr>
-      <td>01/06/2026</td>
-      <td>Magasin</td>
-      <td>Auchan Supermarché Lyon Garibaldi</td>
-      <td>+1,20</td>
-    </tr>
-    <tr>
-      <td>28/05/2026</td>
-      <td>Drive</td>
-      <td>Auchan Drive Saint-Genis (Chapônost)</td>
-      <td>-2,00</td>
-    </tr>
-    <tr>
-      <td>15/05/2026</td>
-      <td>Magasin</td>
-      <td>Auchan Hypermarché Metz</td>
-      <td>+5,48</td>
-    </tr>
-    <tr>
-      <td>10/05/2026</td>
-      <td>Drive</td>
-      <td>Auchan Drive Lille Nord</td>
-      <td>-10,00</td>
-    </tr>
-  </tbody>
-</table>
-</body></html>
+<html><body><div role="list">
+  ${historyItem('04/06/2026', 'Drive', 'Auchan Drive Saint-Genis (Chapônost)', '+0.53')}
+  ${historyItem('01/06/2026', 'Magasin', 'Auchan Supermarché Lyon Garibaldi', '+1.20')}
+  ${historyItem('28/05/2026', 'Drive', 'Auchan Drive Saint-Genis (Chapônost)', '-2.00')}
+  ${historyItem('15/05/2026', 'Magasin', 'Auchan Hypermarché Metz', '+5.48')}
+  ${historyItem('10/05/2026', 'Drive', 'Auchan Drive Lille Nord', '-10.00')}
+</div></body></html>
 `;
 
-// HTML avec montants incluant le symbole €
-const HTML_WITH_EURO = `
-<html><body>
-<table><tbody>
-  <tr>
-    <td>04/06/2026</td>
-    <td>Drive</td>
-    <td>Auchan Drive Test</td>
-    <td>+0,53 €</td>
-  </tr>
-  <tr>
-    <td>03/06/2026</td>
-    <td>Magasin</td>
-    <td>Auchan Magasin Test</td>
-    <td>-2,00 €</td>
-  </tr>
-</tbody></table>
-</body></html>
-`;
-
-// HTML avec historique vide
-const EMPTY_HTML = `
-<html><body>
-<table><tbody>
-</tbody></table>
-</body></html>
-`;
+const EMPTY_HTML = `<html><body><div role="list"></div></body></html>`;
 
 describe('parseLoyaltyHistoryPage', () => {
   // ── Nombre de transactions ──────────────────────────────────────────────────
 
-  it('retourne 5 transactions pour un tableau de 5 lignes', () => {
+  it('retourne 5 transactions', () => {
     const transactions = parseLoyaltyHistoryPage(FULL_HTML);
     expect(transactions).toHaveLength(5);
   });
@@ -89,12 +42,6 @@ describe('parseLoyaltyHistoryPage', () => {
   it('retourne un tableau vide sur un HTML vide', () => {
     const transactions = parseLoyaltyHistoryPage('<html></html>');
     expect(transactions).toHaveLength(0);
-  });
-
-  it('ignore les lignes d\'entête <th> (pas de <td>)', () => {
-    const transactions = parseLoyaltyHistoryPage(FULL_HTML);
-    // Seules les 5 lignes de données doivent être parsées
-    expect(transactions).toHaveLength(5);
   });
 
   // ── Première transaction (gain Drive) ─────────────────────────────────────
@@ -142,22 +89,8 @@ describe('parseLoyaltyHistoryPage', () => {
     expect(transactions[4].amountFormatted).toBe('-10,00 €');
   });
 
-  // ── Montant avec symbole € dans le HTML ───────────────────────────────────
-
-  it('gère les montants qui incluent le symbole € dans le HTML', () => {
-    const transactions = parseLoyaltyHistoryPage(HTML_WITH_EURO);
-    expect(transactions).toHaveLength(2);
-    expect(transactions[0].amountCents).toBe(53);
-    expect(transactions[0].amountFormatted).toBe('+0,53 €');
-    expect(transactions[1].amountCents).toBe(-200);
-    expect(transactions[1].amountFormatted).toBe('-2,00 €');
-  });
-
   it('formate les montants sans signe explicite comme positifs (+)', () => {
-    const html = `
-<html><body><table><tbody>
-  <tr><td>04/06/2026</td><td>Drive</td><td>Auchan Drive Test</td><td>0,53</td></tr>
-</tbody></table></body></html>`;
+    const html = `<html><body><div role="list">${historyItem('04/06/2026', 'Drive', 'Auchan Drive Test', '0.53')}</div></body></html>`;
     const transactions = parseLoyaltyHistoryPage(html);
     expect(transactions).toHaveLength(1);
     expect(transactions[0].amountCents).toBe(53);

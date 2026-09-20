@@ -181,11 +181,17 @@ export class AuchanClient {
   }
 
 
-  /** Historique des transactions de cagnotte (3 derniers mois). */
+  /**
+   * Historique des transactions de cagnotte (3 derniers mois).
+   * Le paramètre "id" (numéro de compte Waaoh) est obligatoire côté site : sans lui,
+   * la page retombe sur un contenu éditorial générique au lieu de l'historique personnel.
+   */
   async getLoyaltyHistory(): Promise<LoyaltyTransaction[]> {
-    const response = await this.request(`${this.baseUrl}/fidelite/ma-carte/historique`, {
-      headers: { Accept: 'text/html' },
-    });
+    const { waoohAccountNumber } = await this.getLoyaltyInfo();
+    const response = await this.request(
+      `${this.baseUrl}/fidelite/ma-carte/historique?id=${encodeURIComponent(waoohAccountNumber)}`,
+      { headers: { Accept: 'text/html' } },
+    );
     return parseLoyaltyHistoryPage(await response.text());
   }
 
